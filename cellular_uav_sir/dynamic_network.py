@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .antenna import random_interferer_gain_linear, sector_beam_gain_db
+from .building_gis import BuildingDataset, evaluate_gis_los, load_building_dataset
 from .config import SimulationConfig
 from .geometry import center_site_layout, generate_linear_trajectory, load_site_layout
 from .pathloss import hybrid_los_probability, received_power, three_dimensional_distance
@@ -56,7 +57,8 @@ def _best_server_choice(
     terminal_height_m: float,
     config: SimulationConfig,
     rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    building_dataset: BuildingDataset | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     beam_gain_db = sector_beam_gain_db(
         site_positions,
         user_point[None, :],
@@ -74,6 +76,16 @@ def _best_server_choice(
     )
     los_probability = hybrid_los_probability(distance_2d, terminal_height_m, config)
     is_los = rng.random(size=distance_2d.shape) < los_probability
+    gis_covered = np.zeros(distance_2d.shape, dtype=bool)
+    if building_dataset is not None:
+        gis_covered, gis_los = evaluate_gis_los(
+            site_positions_xy_m=site_positions,
+            user_point_xy_m=user_point,
+            tx_height_m=config.base_station_height_m,
+            rx_height_m=terminal_height_m,
+            building_dataset=building_dataset,
+        )
+        is_los = np.where(gis_covered, gis_los, is_los)
     pathloss_exponent = np.where(is_los, config.los_pathloss_exponent, config.nlos_pathloss_exponent)
     shadow_sigma_db = np.where(is_los, config.los_shadow_sigma_db, config.nlos_shadow_sigma_db)
     shadow_linear = np.power(10.0, rng.normal(0.0, shadow_sigma_db) / 10.0)
@@ -84,7 +96,15 @@ def _best_server_choice(
         * shadow_linear[:, None, None]
     )
     candidate_reference_power_mw = config.tx_power_mw * candidate_channel_power
-    return candidate_reference_power_mw, candidate_channel_power, beam_gain_db, los_probability, distance_3d
+    return (
+        candidate_reference_power_mw,
+        candidate_channel_power,
+        beam_gain_db,
+        los_probability,
+        distance_3d,
+        is_los,
+        gis_covered,
+    )
 
 
 def run_dynamic_trajectory_experiment(config: SimulationConfig) -> DynamicExperimentBundle:
@@ -96,6 +116,19 @@ def run_dynamic_trajectory_experiment(config: SimulationConfig) -> DynamicExperi
     )
     rng = config.rng(offset=500)
     load_state = np.full(site_positions.shape[0], config.dynamic_load_mean, dtype=float)
+    building_dataset: BuildingDataset | None = None
+    if (
+        config.gis_los_enabled
+        and config.building_footprint_geojson is not None
+        and config.building_footprint_geojson.exists()
+    ):
+        building_dataset = load_building_dataset(
+            building_geojson_path=config.building_footprint_geojson,
+            site_layout_csv=config.dynamic_site_layout_csv,
+            default_height_m=config.building_default_height_m,
+            level_height_m=config.building_level_height_m,
+            min_area_m2=config.building_min_area_m2,
+        )
 
     records: list[dict[str, float | int]] = []
     current_serving_site_index: int | None = None
@@ -108,12 +141,21 @@ def run_dynamic_trajectory_experiment(config: SimulationConfig) -> DynamicExperi
         site_tx_power_mw = _site_tx_power_mw(scheduled_users, config)
         terminal_height_m = config.ground_terminal_height_m + config.dynamic_altitude_m
 
-        candidate_reference_power_mw, candidate_channel_power, beam_gain_db, los_probability, distance_3d = _best_server_choice(
+        (
+            candidate_reference_power_mw,
+            candidate_channel_power,
+            beam_gain_db,
+            los_probability,
+            distance_3d,
+            is_los,
+            gis_covered,
+        ) = _best_server_choice(
             site_positions,
             user_point,
             terminal_height_m,
             config,
             rng,
+            building_dataset=building_dataset,
         )
         flat_best_index = int(np.argmax(candidate_reference_power_mw))
         best_site_index, best_sector_index, best_beam_index = np.unravel_index(
@@ -150,7 +192,7 @@ def run_dynamic_trajectory_experiment(config: SimulationConfig) -> DynamicExperi
         )
         serving_fading_m = (
             config.los_small_scale_m
-            if los_probability[current_serving_site_index] >= 0.5
+            if is_los[current_serving_site_index]
             else config.nlos_small_scale_m
         )
         serving_fading = rng.gamma(shape=serving_fading_m, scale=1.0 / serving_fading_m)
@@ -179,6 +221,16 @@ def run_dynamic_trajectory_experiment(config: SimulationConfig) -> DynamicExperi
             config,
         )
         interferer_is_los = rng.random(size=interferer_sites.shape[0]) < interferer_los_probability
+        interferer_gis_covered = np.zeros(interferer_sites.shape[0], dtype=bool)
+        if building_dataset is not None:
+            interferer_gis_covered, interferer_gis_los = evaluate_gis_los(
+                site_positions_xy_m=interferer_sites,
+                user_point_xy_m=user_point,
+                tx_height_m=config.base_station_height_m,
+                rx_height_m=terminal_height_m,
+                building_dataset=building_dataset,
+            )
+            interferer_is_los = np.where(interferer_gis_covered, interferer_gis_los, interferer_is_los)
         interferer_pathloss_exponent = np.where(
             interferer_is_los,
             config.los_pathloss_exponent,
@@ -249,6 +301,10 @@ def run_dynamic_trajectory_experiment(config: SimulationConfig) -> DynamicExperi
                 "scheduled_users_serving": int(scheduled_users[current_serving_site_index]),
                 "mean_serving_los_probability": float(los_probability[current_serving_site_index]),
                 "mean_neighbor_los_probability": float(np.mean(interferer_los_probability)),
+                "serving_los_state": int(is_los[current_serving_site_index]),
+                "mean_neighbor_los_state": float(np.mean(interferer_is_los)),
+                "serving_gis_covered": int(gis_covered[current_serving_site_index]),
+                "mean_neighbor_gis_covered": float(np.mean(interferer_gis_covered)),
                 "serving_distance_3d_m": float(distance_3d[current_serving_site_index]),
                 "serving_gain_db": float(
                     beam_gain_db[current_serving_site_index, serving_sector_index, serving_beam_index]
@@ -272,6 +328,10 @@ def run_dynamic_trajectory_experiment(config: SimulationConfig) -> DynamicExperi
                 ),
                 "mean_serving_load": float(trace["serving_load"].mean()),
                 "mean_neighbor_load": float(trace["mean_neighbor_load"].mean()),
+                "mean_serving_los_state": float(trace["serving_los_state"].mean()),
+                "mean_neighbor_los_state": float(trace["mean_neighbor_los_state"].mean()),
+                "mean_serving_gis_covered": float(trace["serving_gis_covered"].mean()),
+                "mean_neighbor_gis_covered": float(trace["mean_neighbor_gis_covered"].mean()),
             }
         ]
     )

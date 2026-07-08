@@ -1,2 +1,2 @@
-scenario,time_steps,handover_count,mean_sir_db,mean_sinr_db,p05_sinr_db,mean_rate_bphz,outage_probability_at_10db,mean_serving_load,mean_neighbor_load
-dynamic_layout_sinr,60,14,-6.079476682799882,-6.246752197298496,-72.1755521441081,2.4390689296187307,0.5833333333333334,0.6755169024523118,0.6559599906873429
+scenario,time_steps,handover_count,mean_sir_db,mean_sinr_db,p05_sinr_db,mean_rate_bphz,outage_probability_at_10db,mean_serving_load,mean_neighbor_load,mean_serving_los_state,mean_neighbor_los_state,mean_serving_gis_covered,mean_neighbor_gis_covered
+dynamic_layout_sinr,60,16,2.8166488242385066,2.8029014755615607,-9.750540697236865,0.8544960913432027,0.8166666666666667,0.5252392254624387,0.6249439059899564,1.0,0.9500000000000003,1.0,1.0

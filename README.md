@@ -10,14 +10,14 @@ The code follows the execution plan in `执行计划.md` and now uses a more eng
 - Explicit `SIR` and `SINR` computation with thermal noise, bandwidth, and receiver noise figure
 - Perturbed hexagonal co-channel deployment instead of a perfectly regular lattice
 - Monte Carlo user drops inside the serving hexagon
-- Custom antenna-pattern CSV support, three-sector base-station panels, and optional beam codebook steering
+- Custom antenna-pattern file support (`.csv`, `.msi`, `.pln`), three-sector base-station panels, and optional beam codebook steering
 - Lognormal shadowing and small-scale fading on every link
 - A hybrid UAV LOS model:
   - 3GPP TR 38.901 UMa LOS probability for near-ground user heights
   - ITU-R P.1410 statistical building-blockage LOS probability for higher aerial links
   - LOS/NLOS pathloss exponents, shadowing, and fading sampled per link during the height experiment
 - Effective ASE with traffic activity, scheduling efficiency, control overhead, and outage gating
-- Dynamic trajectory experiment with external site-layout CSV input, handover hysteresis, correlated load, and per-user power splitting
+- Dynamic trajectory experiment with external site-layout CSV input, handover hysteresis, correlated load, per-user power splitting, and optional GIS-driven LOS overrides from building footprints
 
 ## How to run
 
@@ -60,8 +60,9 @@ The script generates CSV tables and PNG figures under:
 ## Repository contents
 
 - `cellular_uav_sir/`: simulation source code
-- `cellular_uav_sir/data/`: antenna-pattern and site-layout CSV inputs, including a real Knoxville cell-tower cluster derived from a public ArcGIS Hub dataset
+- `cellular_uav_sir/data/`: antenna-pattern, site-layout, and building-footprint inputs, including a real Knoxville cell-tower cluster derived from a public ArcGIS Hub dataset
 - `cellular_uav_sir/results/`: generated CSV tables and PNG figures
+- `tools/`: public-data preparation scripts for ArcGIS site extraction and OSM building-footprint download
 - `完整中文报告初稿.md`: full Chinese report
 - `答辩讲稿.md`: oral defense script
 - `PPT汇报提纲.md`: slide-ready page copy
@@ -74,9 +75,37 @@ The script generates CSV tables and PNG figures under:
 - Ground users use multiple co-channel tiers plus random site perturbation
 - UAV users use a hybrid 3GPP/ITU LOS probability model above the ground-user regime
 - Real site layouts can be injected via CSV for dynamic experiments
+- Building-footprint GeoJSON can override dynamic LOS/NLOS states for links covered by the local GIS sample
 - ASE is reported as effective ASE after applying activity factor, scheduler efficiency, control overhead, and a coverage threshold
 - Dynamic experiments add UAV trajectory, handover logic, correlated cell load, and load-aware power sharing
 
 ## Real layout note
 
 The default dynamic layout now uses `cellular_uav_sir/data/real_site_layout_knoxville_tn.csv`, which was derived from the public ArcGIS Hub dataset `Cellular Towers in the United States`. The processing note is recorded in `cellular_uav_sir/data/real_site_layout_knoxville_tn_source.md`.
+
+The default dynamic GIS sample now also includes `cellular_uav_sir/data/knoxville_site_layout_buildings.geojson`, which was downloaded from OpenStreetMap building footprints through the Overpass API across the current Knoxville site-cluster bounding box using tiled requests. The processing note is recorded in `cellular_uav_sir/data/knoxville_site_layout_buildings_source.md`.
+
+The default antenna-pattern file now uses `cellular_uav_sir/data/reference_sector_panel_pattern.msi`, a vendor-style MSI Planet text file derived from the legacy reference cuts. The source note is recorded in `cellular_uav_sir/data/reference_sector_panel_pattern_source.md`.
+
+## Public data preparation
+
+Rebuild a local real-site cluster from the ArcGIS public tower dataset:
+
+```powershell
+python tools/extract_arcgis_site_cluster.py `
+  --center-lat 35.9606388889 `
+  --center-lon -83.9846388889 `
+  --count 21 `
+  --output cellular_uav_sir/data/real_site_layout_knoxville_tn.csv
+```
+
+Download a site-cluster building-footprint GeoJSON sample:
+
+```powershell
+python tools/download_osm_buildings.py `
+  --site-layout-csv cellular_uav_sir/data/real_site_layout_knoxville_tn.csv `
+  --margin-deg 0.003 `
+  --tile-size-deg 0.04 `
+  --tile-overlap-deg 0.001 `
+  --output cellular_uav_sir/data/knoxville_site_layout_buildings.geojson
+```
