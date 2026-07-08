@@ -98,14 +98,7 @@ def plot_reuse_geometry(config: SimulationConfig, output_path: Path) -> None:
         color="#7f7f7f",
         linewidth=1.5,
     )
-    ax.text(
-        0.0,
-        config.cell_radius_m * 0.55,
-        "R",
-        color="#2ca02c",
-        fontsize=11,
-        ha="left",
-    )
+    ax.text(0.0, config.cell_radius_m * 0.55, "R", color="#2ca02c", fontsize=11, ha="left")
     ax.text(
         reference_interferer[0] * 0.45,
         reference_interferer[1] * 0.45,
@@ -134,23 +127,23 @@ def plot_sir_vs_reuse(data: pd.DataFrame, output_path: Path) -> None:
     )
     ax.plot(
         x,
-        data["median_user_sir_db"],
+        data["median_user_sinr_db"],
         marker="D",
         linewidth=1.8,
         linestyle="-.",
-        label="Median user SIR",
+        label="Median user SINR",
     )
     ax.plot(
         x,
-        data["p05_user_sir_db"],
+        data["p05_user_sinr_db"],
         marker="^",
         linewidth=1.8,
         linestyle="--",
-        label="5th percentile user SIR",
+        label="5th percentile user SINR",
     )
-    ax.set_title("SIR versus Reuse Factor")
+    ax.set_title("SIR Baselines and User SINR versus Reuse Factor")
     ax.set_xlabel("Reuse factor N")
-    ax.set_ylabel("SIR (dB)")
+    ax.set_ylabel("Power ratio (dB)")
     ax.legend(loc="upper left")
     _save_figure(fig, output_path)
 
@@ -189,26 +182,26 @@ def plot_ase_vs_reuse(data: pd.DataFrame, output_path: Path) -> None:
     _save_figure(fig, output_path)
 
 
-def plot_sir_vs_height(data: pd.DataFrame, output_path: Path) -> None:
+def plot_sinr_vs_height(data: pd.DataFrame, output_path: Path) -> None:
     fig, ax = plt.subplots()
     ax.plot(
         data["height_m"],
-        data["median_sir_db"],
+        data["median_sinr_db"],
         marker="o",
         linewidth=2.2,
-        label="Median SIR",
+        label="Median SINR",
     )
     ax.plot(
         data["height_m"],
-        data["p05_sir_db"],
+        data["p05_sinr_db"],
         marker="s",
         linewidth=1.8,
         linestyle="--",
-        label="5th percentile SIR",
+        label="5th percentile SINR",
     )
-    ax.set_title("Ground-to-UAV SIR Change versus Altitude")
+    ax.set_title("Ground-to-UAV SINR Change versus Altitude")
     ax.set_xlabel("UAV altitude (m)")
-    ax.set_ylabel("SIR (dB)")
+    ax.set_ylabel("SINR (dB)")
     ax.legend(loc="upper right")
     _save_figure(fig, output_path)
 
@@ -241,11 +234,11 @@ def plot_los_probability_vs_height(data: pd.DataFrame, output_path: Path) -> Non
 def plot_cdf(data: pd.DataFrame, output_path: Path) -> None:
     fig, ax = plt.subplots()
     for scenario, group in data.groupby("scenario"):
-        sir_values = np.sort(group["sir_db"].to_numpy())
-        cdf = np.arange(1, len(sir_values) + 1) / len(sir_values)
-        ax.plot(sir_values, cdf, linewidth=2.0, label=scenario)
-    ax.set_title("SIR CDF for Ground and UAV Users")
-    ax.set_xlabel("SIR (dB)")
+        sinr_values = np.sort(group["sinr_db"].to_numpy())
+        cdf = np.arange(1, len(sinr_values) + 1) / len(sinr_values)
+        ax.plot(sinr_values, cdf, linewidth=2.0, label=scenario)
+    ax.set_title("SINR CDF for Ground and UAV Users")
+    ax.set_xlabel("SINR (dB)")
     ax.set_ylabel("Empirical CDF")
     ax.legend(loc="lower right")
     _save_figure(fig, output_path)
@@ -269,25 +262,73 @@ def plot_pathloss_sweep(data: pd.DataFrame, output_path: Path) -> None:
     _save_figure(fig, output_path)
 
 
+def plot_dynamic_sinr_timeline(trace: pd.DataFrame, output_path: Path) -> None:
+    fig, ax = plt.subplots()
+    ax.plot(trace["time_s"], trace["sinr_db"], color="#1f77b4", linewidth=2.0, label="SINR")
+    handover_trace = trace[trace["handover_flag"] == 1]
+    if not handover_trace.empty:
+        ax.scatter(
+            handover_trace["time_s"],
+            handover_trace["sinr_db"],
+            color="#d62728",
+            marker="x",
+            s=60,
+            label="Handover",
+        )
+    ax.set_title("Dynamic UAV Trajectory SINR Timeline")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("SINR (dB)")
+    ax.legend(loc="upper right")
+    _save_figure(fig, output_path)
+
+
+def plot_dynamic_layout_map(
+    site_layout: pd.DataFrame,
+    trace: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(7.0, 7.0))
+    ax.scatter(site_layout["x_m"], site_layout["y_m"], color="#1f77b4", s=45, label="Sites")
+    ax.plot(trace["x_m"], trace["y_m"], color="#ff7f0e", linewidth=2.0, label="UAV trajectory")
+    start_row = trace.iloc[0]
+    end_row = trace.iloc[-1]
+    ax.scatter([start_row["x_m"]], [start_row["y_m"]], color="#2ca02c", s=60, marker="o", label="Start")
+    ax.scatter([end_row["x_m"]], [end_row["y_m"]], color="#d62728", s=60, marker="^", label="End")
+    ax.set_title("Data-Driven Site Layout and UAV Trajectory")
+    ax.set_xlabel("x position (m)")
+    ax.set_ylabel("y position (m)")
+    ax.set_aspect("equal", adjustable="box")
+    ax.legend(loc="upper right")
+    _save_figure(fig, output_path)
+
+
 def generate_all_plots(
     config: SimulationConfig,
     sir_vs_reuse: pd.DataFrame,
     ase_vs_reuse: pd.DataFrame,
-    sir_vs_height: pd.DataFrame,
+    sinr_vs_height: pd.DataFrame,
     cdf_samples: pd.DataFrame,
     pathloss_sweep: pd.DataFrame,
+    dynamic_trace: pd.DataFrame,
+    dynamic_site_layout: pd.DataFrame,
 ) -> None:
     configure_style()
     plot_reuse_geometry(config, config.results_dir / "figure_1_reuse_geometry.png")
     plot_sir_vs_reuse(sir_vs_reuse, config.results_dir / "figure_2_sir_vs_reuse.png")
     plot_ase_vs_reuse(ase_vs_reuse, config.results_dir / "figure_3_ase_vs_reuse.png")
-    plot_sir_vs_height(sir_vs_height, config.results_dir / "figure_4_sir_vs_height.png")
+    plot_sinr_vs_height(sinr_vs_height, config.results_dir / "figure_4_sir_vs_height.png")
     plot_cdf(cdf_samples, config.results_dir / "figure_5_sir_cdf.png")
-    plot_pathloss_sweep(
-        pathloss_sweep,
-        config.results_dir / "figure_6_pathloss_sweep.png",
-    )
+    plot_pathloss_sweep(pathloss_sweep, config.results_dir / "figure_6_pathloss_sweep.png")
     plot_los_probability_vs_height(
-        sir_vs_height,
+        sinr_vs_height,
         config.results_dir / "figure_7_los_probability_vs_height.png",
+    )
+    plot_dynamic_sinr_timeline(
+        dynamic_trace,
+        config.results_dir / "figure_8_dynamic_sinr_timeline.png",
+    )
+    plot_dynamic_layout_map(
+        dynamic_site_layout,
+        dynamic_trace,
+        config.results_dir / "figure_9_dynamic_layout_map.png",
     )

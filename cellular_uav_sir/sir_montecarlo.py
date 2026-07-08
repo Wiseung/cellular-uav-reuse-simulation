@@ -4,36 +4,75 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .antenna import best_sector_gain_db, best_sector_gain_linear, sector_gain_linear
-from .config import SimulationConfig
-from .geometry import cochannel_interferers, edge_user_point, perturb_site_positions, reuse_distance
-from .pathloss import (
-    hybrid_los_probability,
-    received_power,
-    three_dimensional_distance,
+from .antenna import (
+    best_sector_gain_db,
+    best_sector_gain_linear,
+    random_interferer_gain_linear,
 )
+from .config import SimulationConfig
+from .geometry import (
+    center_site_layout,
+    cochannel_interferers,
+    edge_user_point,
+    load_site_layout,
+    perturb_site_positions,
+    reuse_distance,
+    select_nearest_sites,
+)
+from .pathloss import hybrid_los_probability, received_power, three_dimensional_distance
 
 
 @dataclass(frozen=True)
 class SirSamples:
-    sir_linear: np.ndarray
+    signal_power_mw: np.ndarray
+    interference_power_mw: np.ndarray
+    noise_power_mw: np.ndarray
     serving_los_probability: np.ndarray | None = None
     interferer_los_probability: np.ndarray | None = None
     serving_antenna_gain_db: np.ndarray | None = None
     interferer_antenna_gain_db: np.ndarray | None = None
 
     @property
+    def sir_linear(self) -> np.ndarray:
+        return self.signal_power_mw / np.maximum(self.interference_power_mw, 1e-15)
+
+    @property
+    def sinr_linear(self) -> np.ndarray:
+        return self.signal_power_mw / np.maximum(
+            self.interference_power_mw + self.noise_power_mw,
+            1e-15,
+        )
+
+    @property
     def sir_db(self) -> np.ndarray:
         return 10.0 * np.log10(self.sir_linear)
 
-    def mean_spectral_efficiency(self) -> float:
-        return float(np.mean(np.log2(1.0 + self.sir_linear)))
+    @property
+    def sinr_db(self) -> np.ndarray:
+        return 10.0 * np.log10(self.sinr_linear)
 
-    def coverage_probability(self, threshold_db: float) -> float:
-        return float(np.mean(self.sir_db >= threshold_db))
+    def metric_linear(self, metric: str = "sinr") -> np.ndarray:
+        if metric == "sinr":
+            return self.sinr_linear
+        if metric == "sir":
+            return self.sir_linear
+        raise ValueError(f"Unsupported metric: {metric}")
 
-    def percentile_db(self, percentile: float) -> float:
-        return float(np.percentile(self.sir_db, percentile))
+    def metric_db(self, metric: str = "sinr") -> np.ndarray:
+        if metric == "sinr":
+            return self.sinr_db
+        if metric == "sir":
+            return self.sir_db
+        raise ValueError(f"Unsupported metric: {metric}")
+
+    def mean_spectral_efficiency(self, metric: str = "sinr") -> float:
+        return float(np.mean(np.log2(1.0 + self.metric_linear(metric))))
+
+    def coverage_probability(self, threshold_db: float, metric: str = "sinr") -> float:
+        return float(np.mean(self.metric_db(metric) >= threshold_db))
+
+    def percentile_db(self, percentile: float, metric: str = "sinr") -> float:
+        return float(np.percentile(self.metric_db(metric), percentile))
 
     def mean_serving_los_probability(self) -> float | None:
         if self.serving_los_probability is None:
@@ -77,26 +116,6 @@ def _sample_nakagami_power(
     return rng.gamma(shape=shape, scale=1.0 / shape, size=size)
 
 
-def _sample_interferer_sites(
-    reuse_factor: int,
-    cell_radius: float,
-    interferer_count: int,
-    config: SimulationConfig,
-    rng: np.random.Generator,
-    sample_count: int,
-) -> np.ndarray:
-    base_sites = cochannel_interferers(reuse_factor, cell_radius, count=interferer_count)
-    jitter_radius_m = (
-        reuse_distance(reuse_factor, cell_radius) * config.site_perturbation_fraction
-    )
-    return perturb_site_positions(
-        base_sites,
-        jitter_radius_m=jitter_radius_m,
-        rng=rng,
-        sample_count=sample_count,
-    )
-
-
 def _pairwise_horizontal_distances(
     user_points: np.ndarray,
     base_station_points: np.ndarray,
@@ -113,6 +132,62 @@ def _effective_interference_mask(
     return (
         rng.random(size=shape) < config.resource_activity_factor
     ).astype(float)
+
+
+def _layout_interferer_sites(config: SimulationConfig, count: int) -> np.ndarray:
+    if config.site_layout_csv is None:
+        raise ValueError("site_layout_csv is not configured")
+    layout_sites = center_site_layout(load_site_layout(config.site_layout_csv))
+    return select_nearest_sites(
+        layout_sites,
+        count=count,
+        exclude_origin=True,
+    )
+
+
+def _sample_interferer_sites(
+    reuse_factor: int,
+    cell_radius: float,
+    interferer_count: int,
+    config: SimulationConfig,
+    rng: np.random.Generator,
+    sample_count: int,
+) -> np.ndarray:
+    if config.site_layout_csv is not None:
+        fixed_sites = _layout_interferer_sites(config, interferer_count)
+        return np.broadcast_to(fixed_sites, (sample_count, *fixed_sites.shape)).copy()
+
+    base_sites = cochannel_interferers(reuse_factor, cell_radius, count=interferer_count)
+    jitter_radius_m = (
+        reuse_distance(reuse_factor, cell_radius) * config.site_perturbation_fraction
+    )
+    return perturb_site_positions(
+        base_sites,
+        jitter_radius_m=jitter_radius_m,
+        rng=rng,
+        sample_count=sample_count,
+    )
+
+
+def _assemble_samples(
+    signal_power_mw: np.ndarray,
+    interference_power_mw: np.ndarray,
+    config: SimulationConfig,
+    serving_los_probability: np.ndarray | None = None,
+    interferer_los_probability: np.ndarray | None = None,
+    serving_antenna_gain_db: np.ndarray | None = None,
+    interferer_antenna_gain_db: np.ndarray | None = None,
+) -> SirSamples:
+    noise_power_mw = np.full_like(signal_power_mw, config.thermal_noise_power_mw, dtype=float)
+    return SirSamples(
+        signal_power_mw=signal_power_mw,
+        interference_power_mw=interference_power_mw,
+        noise_power_mw=noise_power_mw,
+        serving_los_probability=serving_los_probability,
+        interferer_los_probability=interferer_los_probability,
+        serving_antenna_gain_db=serving_antenna_gain_db,
+        interferer_antenna_gain_db=interferer_antenna_gain_db,
+    )
 
 
 def simulate_sir_samples(
@@ -152,9 +227,10 @@ def simulate_sir_samples(
         terminal_height_m,
         config,
     ).ravel()
-    desired_power = (
-        desired_gain_linear
-        * received_power(desired_distance_3d, pathloss_exponent)
+    desired_power_mw = (
+        config.tx_power_mw
+        * desired_gain_linear
+        * received_power(desired_distance_3d, pathloss_exponent, config=config)
         * _sample_lognormal_linear(
             rng,
             config.ground_shadow_sigma_db,
@@ -181,42 +257,42 @@ def simulate_sir_samples(
         tx_height_m=config.base_station_height_m,
         rx_height_m=terminal_height_m,
     )
-    interferer_sector_gain_linear = sector_gain_linear(
+    interferer_sector_gain_linear = random_interferer_gain_linear(
         interferer_sites,
         user_points,
         terminal_height_m,
         config,
+        rng,
     )
     interferer_gain_db = 10.0 * np.log10(
         np.sum(interferer_sector_gain_linear, axis=-1)
     )
-    interferer_shadow = _sample_lognormal_linear(
-        rng,
-        config.ground_shadow_sigma_db,
-        size=interferer_distance_3d.shape,
-    )[..., None]
-    interferer_fading = _sample_nakagami_power(
-        rng,
-        config.ground_small_scale_m,
-        size=(*interferer_distance_3d.shape, len(config.sector_azimuths_deg)),
-    )
-    interferer_activity = _effective_interference_mask(
-        rng,
-        (*interferer_distance_3d.shape, len(config.sector_azimuths_deg)),
-        config,
-    )
-    interference_power = np.sum(
-        interferer_sector_gain_linear
-        * received_power(interferer_distance_3d, pathloss_exponent)[..., None]
-        * interferer_shadow
-        * interferer_fading
-        * interferer_activity,
+    interference_power_mw = np.sum(
+        config.tx_power_mw
+        * interferer_sector_gain_linear
+        * received_power(interferer_distance_3d, pathloss_exponent, config=config)[..., None]
+        * _sample_lognormal_linear(
+            rng,
+            config.ground_shadow_sigma_db,
+            size=interferer_distance_3d.shape,
+        )[..., None]
+        * _sample_nakagami_power(
+            rng,
+            config.ground_small_scale_m,
+            size=(*interferer_distance_3d.shape, interferer_sector_gain_linear.shape[-1]),
+        )
+        * _effective_interference_mask(
+            rng,
+            (*interferer_distance_3d.shape, interferer_sector_gain_linear.shape[-1]),
+            config,
+        ),
         axis=(1, 2),
     )
 
-    sir_linear = desired_power / np.maximum(interference_power, 1e-15)
-    return SirSamples(
-        sir_linear=sir_linear,
+    return _assemble_samples(
+        desired_power_mw,
+        interference_power_mw,
+        config,
         serving_antenna_gain_db=desired_gain_db,
         interferer_antenna_gain_db=np.mean(interferer_gain_db, axis=1),
     )
@@ -302,9 +378,10 @@ def simulate_los_probability_sir_samples(
         terminal_height_m,
         config,
     ).ravel()
-    desired_power = (
-        desired_gain_linear
-        * received_power(desired_distance_3d, desired_pathloss_exponent)
+    desired_power_mw = (
+        config.tx_power_mw
+        * desired_gain_linear
+        * received_power(desired_distance_3d, desired_pathloss_exponent, config=config)
         * _sample_lognormal_linear(
             rng,
             desired_shadow_sigma_db,
@@ -352,41 +429,42 @@ def simulate_los_probability_sir_samples(
         config.los_small_scale_m,
         config.nlos_small_scale_m,
     )
-    interferer_sector_gain_linear = sector_gain_linear(
+    interferer_sector_gain_linear = random_interferer_gain_linear(
         interferer_sites,
         user_points,
         terminal_height_m,
         config,
+        rng,
     )
     interferer_gain_db = 10.0 * np.log10(
         np.sum(interferer_sector_gain_linear, axis=-1)
     )
-    interferer_shadow = _sample_lognormal_linear(
-        rng,
-        interferer_shadow_sigma_db,
-        size=interferer_distance_3d.shape,
-    )[..., None]
-    interferer_fading = _sample_nakagami_power(
-        rng,
-        interferer_fading_m[..., None],
-        size=(*interferer_distance_3d.shape, len(config.sector_azimuths_deg)),
-    )
-    interferer_activity = _effective_interference_mask(
-        rng,
-        (*interferer_distance_3d.shape, len(config.sector_azimuths_deg)),
-        config,
-    )
-    interference_power = np.sum(
-        interferer_sector_gain_linear
-        * received_power(interferer_distance_3d, interferer_pathloss_exponent)[..., None]
-        * interferer_shadow
-        * interferer_fading
-        * interferer_activity,
+    interference_power_mw = np.sum(
+        config.tx_power_mw
+        * interferer_sector_gain_linear
+        * received_power(interferer_distance_3d, interferer_pathloss_exponent, config=config)[..., None]
+        * _sample_lognormal_linear(
+            rng,
+            interferer_shadow_sigma_db,
+            size=interferer_distance_3d.shape,
+        )[..., None]
+        * _sample_nakagami_power(
+            rng,
+            interferer_fading_m[..., None],
+            size=(*interferer_distance_3d.shape, interferer_sector_gain_linear.shape[-1]),
+        )
+        * _effective_interference_mask(
+            rng,
+            (*interferer_distance_3d.shape, interferer_sector_gain_linear.shape[-1]),
+            config,
+        ),
         axis=(1, 2),
     )
 
-    return SirSamples(
-        sir_linear=desired_power / np.maximum(interference_power, 1e-15),
+    return _assemble_samples(
+        desired_power_mw,
+        interference_power_mw,
+        config,
         serving_los_probability=desired_los_probability,
         interferer_los_probability=np.mean(interferer_los_probability, axis=1),
         serving_antenna_gain_db=desired_gain_db,

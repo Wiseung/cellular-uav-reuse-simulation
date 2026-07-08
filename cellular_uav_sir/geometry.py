@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 import math
 from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 
@@ -81,6 +83,64 @@ def perturb_site_positions(
 
     offsets = np.stack((radii * np.cos(angles), radii * np.sin(angles)), axis=-1)
     return sites + offsets
+
+
+@lru_cache(maxsize=None)
+def _load_site_layout_cached(csv_path: str) -> tuple[tuple[float, float], ...]:
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Site layout file not found: {path}")
+
+    points: list[tuple[float, float]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required_columns = {"x_m", "y_m"}
+        if reader.fieldnames is None or not required_columns.issubset(reader.fieldnames):
+            raise ValueError(
+                f"Site layout CSV must include columns {sorted(required_columns)}: {path}"
+            )
+        for row in reader:
+            points.append((float(row["x_m"]), float(row["y_m"])))
+
+    if not points:
+        raise ValueError(f"Site layout CSV contains no rows: {path}")
+    return tuple(points)
+
+
+def load_site_layout(csv_path: Path | str) -> np.ndarray:
+    return np.array(_load_site_layout_cached(str(Path(csv_path).resolve())), dtype=float)
+
+
+def center_site_layout(site_positions: np.ndarray) -> np.ndarray:
+    sites = np.asarray(site_positions, dtype=float)
+    norms = np.linalg.norm(sites, axis=1)
+    center_site = sites[int(np.argmin(norms))]
+    return sites - center_site
+
+
+def select_nearest_sites(
+    site_positions: np.ndarray,
+    count: int,
+    exclude_origin: bool = True,
+) -> np.ndarray:
+    sites = np.asarray(site_positions, dtype=float)
+    norms = np.linalg.norm(sites, axis=1)
+    order = np.argsort(norms)
+    ordered_sites = sites[order]
+    if exclude_origin:
+        origin_mask = np.linalg.norm(ordered_sites, axis=1) > 1e-9
+        ordered_sites = ordered_sites[origin_mask]
+    return ordered_sites[:count]
+
+
+def generate_linear_trajectory(
+    half_length_m: float,
+    lateral_offset_m: float,
+    steps: int,
+) -> np.ndarray:
+    x = np.linspace(-half_length_m, half_length_m, num=steps, dtype=float)
+    y = np.full_like(x, lateral_offset_m, dtype=float)
+    return np.column_stack((x, y))
 
 
 def hexagon_vertices(cell_radius: float, center: np.ndarray | None = None) -> np.ndarray:

@@ -26,7 +26,7 @@ def main() -> None:
         config.results_dir / "table_2_ase_vs_reuse.csv",
     )
     _save_table(
-        experiment_bundle.sir_vs_height,
+        experiment_bundle.sinr_vs_height,
         config.results_dir / "table_3_sir_vs_height.csv",
     )
     _save_table(
@@ -37,14 +37,28 @@ def main() -> None:
         experiment_bundle.pathloss_sweep,
         config.results_dir / "table_5_pathloss_sweep.csv",
     )
+    _save_table(
+        experiment_bundle.dynamic_summary,
+        config.results_dir / "table_6_dynamic_summary.csv",
+    )
+    _save_table(
+        experiment_bundle.dynamic_trace,
+        config.results_dir / "table_7_dynamic_trace.csv",
+    )
+    _save_table(
+        experiment_bundle.dynamic_site_layout,
+        config.results_dir / "table_8_dynamic_site_layout.csv",
+    )
 
     generate_all_plots(
         config=config,
         sir_vs_reuse=experiment_bundle.sir_vs_reuse,
         ase_vs_reuse=experiment_bundle.ase_vs_reuse,
-        sir_vs_height=experiment_bundle.sir_vs_height,
+        sinr_vs_height=experiment_bundle.sinr_vs_height,
         cdf_samples=experiment_bundle.cdf_samples,
         pathloss_sweep=experiment_bundle.pathloss_sweep,
+        dynamic_trace=experiment_bundle.dynamic_trace,
+        dynamic_site_layout=experiment_bundle.dynamic_site_layout,
     )
 
     print(f"Results written to: {config.results_dir}")
@@ -55,6 +69,9 @@ def main() -> None:
         "table_3_sir_vs_height.csv",
         "table_4_sir_cdf_samples.csv",
         "table_5_pathloss_sweep.csv",
+        "table_6_dynamic_summary.csv",
+        "table_7_dynamic_trace.csv",
+        "table_8_dynamic_site_layout.csv",
     ):
         print(f"  - {filename}")
     print("Generated figures:")
@@ -66,6 +83,8 @@ def main() -> None:
         "figure_5_sir_cdf.png",
         "figure_6_pathloss_sweep.png",
         "figure_7_los_probability_vs_height.png",
+        "figure_8_dynamic_sinr_timeline.png",
+        "figure_9_dynamic_layout_map.png",
     ):
         print(f"  - {filename}")
 

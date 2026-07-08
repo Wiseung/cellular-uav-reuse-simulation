@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .config import SimulationConfig
+from .dynamic_network import run_dynamic_trajectory_experiment
 from .geometry import sample_points_in_hexagon
 from .sir_analytic import sir_db as analytic_sir_db
 from .sir_montecarlo import edge_user_sir, simulate_los_probability_sir_samples, simulate_sir_samples
@@ -15,19 +16,22 @@ from .sir_montecarlo import edge_user_sir, simulate_los_probability_sir_samples,
 class ExperimentBundle:
     sir_vs_reuse: pd.DataFrame
     ase_vs_reuse: pd.DataFrame
-    sir_vs_height: pd.DataFrame
+    sinr_vs_height: pd.DataFrame
     cdf_samples: pd.DataFrame
     pathloss_sweep: pd.DataFrame
+    dynamic_summary: pd.DataFrame
+    dynamic_trace: pd.DataFrame
+    dynamic_site_layout: pd.DataFrame
 
 
 def _effective_rate_and_ase(
-    sir_linear: np.ndarray,
+    sinr_linear: np.ndarray,
     reuse_factor: int,
     config: SimulationConfig,
 ) -> tuple[float, float, float]:
-    sir_linear = np.asarray(sir_linear, dtype=float)
-    sir_db = 10.0 * np.log10(sir_linear)
-    scheduled_rate = np.log2(1.0 + sir_linear) * (sir_db >= config.coverage_threshold_db)
+    sinr_linear = np.asarray(sinr_linear, dtype=float)
+    sinr_db = 10.0 * np.log10(sinr_linear)
+    scheduled_rate = np.log2(1.0 + sinr_linear) * (sinr_db >= config.coverage_threshold_db)
     mean_scheduled_rate = float(np.mean(scheduled_rate))
     effective_rate = (
         mean_scheduled_rate
@@ -46,7 +50,7 @@ def run_reuse_experiments(config: SimulationConfig) -> tuple[pd.DataFrame, pd.Da
         cell_radius=config.cell_radius_m,
         rng=config.rng(offset=10),
     )
-    sir_records: list[dict[str, float]] = []
+    sinr_records: list[dict[str, float]] = []
     ase_records: list[dict[str, float]] = []
 
     for reuse_factor in config.reuse_factors:
@@ -59,11 +63,11 @@ def run_reuse_experiments(config: SimulationConfig) -> tuple[pd.DataFrame, pd.Da
             rng=config.rng(offset=100 + reuse_factor),
         )
         effective_rate, effective_ase_per_cell, effective_ase_per_km2 = _effective_rate_and_ase(
-            samples.sir_linear,
+            samples.sinr_linear,
             reuse_factor=reuse_factor,
             config=config,
         )
-        sir_records.append(
+        sinr_records.append(
             {
                 "reuse_factor": reuse_factor,
                 "analytic_sir_db": analytic_sir_db(
@@ -79,21 +83,33 @@ def run_reuse_experiments(config: SimulationConfig) -> tuple[pd.DataFrame, pd.Da
                     )
                 ),
                 "median_user_sir_db": float(np.median(samples.sir_db)),
-                "p05_user_sir_db": samples.percentile_db(5.0),
+                "p05_user_sir_db": samples.percentile_db(5.0, metric="sir"),
+                "median_user_sinr_db": float(np.median(samples.sinr_db)),
+                "p05_user_sinr_db": samples.percentile_db(5.0, metric="sinr"),
+                "mean_signal_power_dbm": float(np.mean(10.0 * np.log10(samples.signal_power_mw))),
+                "mean_interference_power_dbm": float(
+                    np.mean(10.0 * np.log10(np.maximum(samples.interference_power_mw, 1e-15)))
+                ),
+                "noise_power_dbm": float(config.thermal_noise_power_dbm),
             }
         )
         ase_records.append(
             {
                 "reuse_factor": reuse_factor,
                 "channel_share": 1.0 / reuse_factor,
-                "mean_user_rate_bphz": samples.mean_spectral_efficiency(),
+                "mean_user_rate_sir_bphz": samples.mean_spectral_efficiency(metric="sir"),
+                "mean_user_rate_sinr_bphz": samples.mean_spectral_efficiency(metric="sinr"),
                 "effective_rate_bphz": effective_rate,
                 "effective_ase_bphz_per_cell": effective_ase_per_cell,
                 "effective_ase_bphz_per_km2": effective_ase_per_km2,
+                "coverage_probability_at_10db": samples.coverage_probability(
+                    config.coverage_threshold_db,
+                    metric="sinr",
+                ),
             }
         )
 
-    return pd.DataFrame(sir_records), pd.DataFrame(ase_records)
+    return pd.DataFrame(sinr_records), pd.DataFrame(ase_records)
 
 
 def run_height_experiment(config: SimulationConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -116,7 +132,7 @@ def run_height_experiment(config: SimulationConfig) -> tuple[pd.DataFrame, pd.Da
             rng=config.rng(offset=200 + int(height_m)),
         )
         effective_rate, effective_ase_per_cell, effective_ase_per_km2 = _effective_rate_and_ase(
-            samples.sir_linear,
+            samples.sinr_linear,
             reuse_factor=config.default_reuse_factor,
             config=config,
         )
@@ -124,11 +140,15 @@ def run_height_experiment(config: SimulationConfig) -> tuple[pd.DataFrame, pd.Da
             {
                 "height_m": float(height_m),
                 "median_sir_db": float(np.median(samples.sir_db)),
-                "p05_sir_db": samples.percentile_db(5.0),
+                "median_sinr_db": float(np.median(samples.sinr_db)),
+                "p05_sir_db": samples.percentile_db(5.0, metric="sir"),
+                "p05_sinr_db": samples.percentile_db(5.0, metric="sinr"),
                 "coverage_probability_at_10db": samples.coverage_probability(
-                    config.coverage_threshold_db
+                    config.coverage_threshold_db,
+                    metric="sinr",
                 ),
-                "mean_user_rate_bphz": samples.mean_spectral_efficiency(),
+                "mean_user_rate_sir_bphz": samples.mean_spectral_efficiency(metric="sir"),
+                "mean_user_rate_sinr_bphz": samples.mean_spectral_efficiency(metric="sinr"),
                 "effective_rate_bphz": effective_rate,
                 "effective_ase_bphz_per_cell": effective_ase_per_cell,
                 "effective_ase_bphz_per_km2": effective_ase_per_km2,
@@ -136,16 +156,21 @@ def run_height_experiment(config: SimulationConfig) -> tuple[pd.DataFrame, pd.Da
                 "mean_interferer_los_probability": samples.mean_interferer_los_probability(),
                 "mean_serving_antenna_gain_db": samples.mean_serving_antenna_gain_db(),
                 "mean_interferer_antenna_gain_db": samples.mean_interferer_antenna_gain_db(),
+                "mean_signal_power_dbm": float(np.mean(10.0 * np.log10(samples.signal_power_mw))),
+                "mean_interference_power_dbm": float(
+                    np.mean(10.0 * np.log10(np.maximum(samples.interference_power_mw, 1e-15)))
+                ),
+                "noise_power_dbm": float(config.thermal_noise_power_dbm),
             }
         )
         if height_m in config.cdf_altitudes_m:
             label = "Ground 0 m" if height_m == 0 else f"UAV {height_m} m"
-            for sir_value_db in samples.sir_db:
+            for sinr_value_db in samples.sinr_db:
                 cdf_records.append(
                     {
                         "scenario": label,
                         "height_m": float(height_m),
-                        "sir_db": float(sir_value_db),
+                        "sinr_db": float(sinr_value_db),
                     }
                 )
 
@@ -181,12 +206,16 @@ def run_pathloss_sweep(config: SimulationConfig) -> pd.DataFrame:
 
 def run_all_experiments(config: SimulationConfig) -> ExperimentBundle:
     sir_vs_reuse, ase_vs_reuse = run_reuse_experiments(config)
-    sir_vs_height, cdf_samples = run_height_experiment(config)
+    sinr_vs_height, cdf_samples = run_height_experiment(config)
     pathloss_sweep = run_pathloss_sweep(config)
+    dynamic_bundle = run_dynamic_trajectory_experiment(config)
     return ExperimentBundle(
         sir_vs_reuse=sir_vs_reuse,
         ase_vs_reuse=ase_vs_reuse,
-        sir_vs_height=sir_vs_height,
+        sinr_vs_height=sinr_vs_height,
         cdf_samples=cdf_samples,
         pathloss_sweep=pathloss_sweep,
+        dynamic_summary=dynamic_bundle.summary,
+        dynamic_trace=dynamic_bundle.trace,
+        dynamic_site_layout=dynamic_bundle.site_layout,
     )
