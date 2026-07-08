@@ -45,7 +45,7 @@ class SimulationConfig:
     itu_gamma_m: float = 15.0
     site_layout_csv: Path | None = None
     dynamic_site_layout_csv: Path = field(
-        default_factory=lambda: Path(__file__).resolve().parent / "data" / "demo_site_layout.csv"
+        default_factory=lambda: Path(__file__).resolve().parent / "data" / "real_site_layout_knoxville_tn.csv"
     )
     ground_interferer_count: int = 18
     aerial_interferer_count: int = 42

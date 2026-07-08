@@ -60,7 +60,7 @@ The script generates CSV tables and PNG figures under:
 ## Repository contents
 
 - `cellular_uav_sir/`: simulation source code
-- `cellular_uav_sir/data/`: antenna-pattern and site-layout CSV inputs
+- `cellular_uav_sir/data/`: antenna-pattern and site-layout CSV inputs, including a real Knoxville cell-tower cluster derived from a public ArcGIS Hub dataset
 - `cellular_uav_sir/results/`: generated CSV tables and PNG figures
 - `完整中文报告初稿.md`: full Chinese report
 - `答辩讲稿.md`: oral defense script
@@ -76,3 +76,7 @@ The script generates CSV tables and PNG figures under:
 - Real site layouts can be injected via CSV for dynamic experiments
 - ASE is reported as effective ASE after applying activity factor, scheduler efficiency, control overhead, and a coverage threshold
 - Dynamic experiments add UAV trajectory, handover logic, correlated cell load, and load-aware power sharing
+
+## Real layout note
+
+The default dynamic layout now uses `cellular_uav_sir/data/real_site_layout_knoxville_tn.csv`, which was derived from the public ArcGIS Hub dataset `Cellular Towers in the United States`. The processing note is recorded in `cellular_uav_sir/data/real_site_layout_knoxville_tn_source.md`.
