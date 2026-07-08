@@ -47,12 +47,15 @@ class SimulationConfig:
     dynamic_site_layout_csv: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent / "data" / "real_site_layout_knoxville_tn.csv"
     )
+    building_footprint_geojson: Path | None = field(
+        default_factory=lambda: Path(__file__).resolve().parent / "data" / "knoxville_site_layout_buildings.geojson"
+    )
     ground_interferer_count: int = 18
     aerial_interferer_count: int = 42
     layout_interferer_count: int = 24
     site_perturbation_fraction: float = 0.18
-    antenna_pattern_csv: Path = field(
-        default_factory=lambda: Path(__file__).resolve().parent / "data" / "custom_panel_pattern.csv"
+    antenna_pattern_file: Path = field(
+        default_factory=lambda: Path(__file__).resolve().parent / "data" / "reference_sector_panel_pattern.msi"
     )
     sector_azimuths_deg: tuple[float, ...] = (90.0, 210.0, 330.0)
     horizontal_beamwidth_deg: float = 65.0
@@ -91,6 +94,10 @@ class SimulationConfig:
     dynamic_min_dwell_steps: int = 3
     dynamic_outage_threshold_db: float = 0.0
     power_split_exponent: float = 1.0
+    gis_los_enabled: bool = True
+    building_default_height_m: float = 12.0
+    building_level_height_m: float = 3.0
+    building_min_area_m2: float = 16.0
     results_dir: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent / "results"
     )
