@@ -119,12 +119,25 @@ def expected_link_received_power(
     return los_probability * received_power(
         distance_m,
         config.los_pathloss_exponent,
+        config=config,
     ) + (1.0 - los_probability) * received_power(
         distance_m,
         config.nlos_pathloss_exponent,
+        config=config,
     )
 
 
-def received_power(distance_m: np.ndarray, pathloss_exponent: float) -> np.ndarray:
+def received_power(
+    distance_m: np.ndarray,
+    pathloss_exponent: float,
+    config: SimulationConfig | None = None,
+) -> np.ndarray:
     distance = np.maximum(np.asarray(distance_m, dtype=float), 1.0)
-    return np.power(distance, -pathloss_exponent)
+    if config is None:
+        return np.power(distance, -pathloss_exponent)
+
+    reference_distance = max(config.reference_distance_m, 1e-3)
+    pathloss_db = config.reference_pathloss_db + 10.0 * pathloss_exponent * np.log10(
+        distance / reference_distance
+    )
+    return np.power(10.0, -pathloss_db / 10.0)

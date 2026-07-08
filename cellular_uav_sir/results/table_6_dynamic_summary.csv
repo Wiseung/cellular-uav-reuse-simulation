@@ -1,0 +1,2 @@
+scenario,time_steps,handover_count,mean_sir_db,mean_sinr_db,p05_sinr_db,mean_rate_bphz,outage_probability_at_10db,mean_serving_load,mean_neighbor_load
+dynamic_layout_sinr,60,18,-8.12698121418996,-8.127635763355874,-48.48744636257097,0.19586316190301942,0.95,0.6786475997923335,0.6159332161970852
