@@ -11,6 +11,7 @@ from cellular_uav_sir.building_gis import (
     BuildingDataset,
     BuildingFootprint,
     evaluate_gis_los,
+    evaluate_gis_los_and_loss,
     load_building_dataset,
 )
 
@@ -87,6 +88,48 @@ class BuildingGisTests(unittest.TestCase):
 
         self.assertEqual(covered.tolist(), [False])
         self.assertEqual(los.tolist(), [True])
+
+    def test_evaluate_gis_los_and_loss_adds_excess_loss_for_blocked_path(self) -> None:
+        building = BuildingFootprint(
+            polygon_xy_m=np.array(
+                [
+                    [45.0, -10.0],
+                    [55.0, -10.0],
+                    [55.0, 10.0],
+                    [45.0, 10.0],
+                ],
+                dtype=float,
+            ),
+            height_m=40.0,
+            min_x_m=45.0,
+            max_x_m=55.0,
+            min_y_m=-10.0,
+            max_y_m=10.0,
+        )
+        dataset = BuildingDataset(
+            buildings=(building,),
+            min_x_m=0.0,
+            max_x_m=100.0,
+            min_y_m=-20.0,
+            max_y_m=20.0,
+        )
+
+        covered, los, excess_loss_db = evaluate_gis_los_and_loss(
+            site_positions_xy_m=np.array([[0.0, 0.0]], dtype=float),
+            user_point_xy_m=np.array([100.0, 0.0], dtype=float),
+            tx_height_m=25.0,
+            rx_height_m=25.0,
+            building_dataset=dataset,
+            carrier_frequency_ghz=3.5,
+            penetration_loss_per_meter_db=0.35,
+            penetration_loss_cap_db=18.0,
+            diffraction_loss_cap_db=24.0,
+            total_excess_loss_cap_db=32.0,
+        )
+
+        self.assertEqual(covered.tolist(), [True])
+        self.assertEqual(los.tolist(), [False])
+        self.assertGreater(float(excess_loss_db[0]), 0.0)
 
     def test_load_building_dataset_uses_geojson_height_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

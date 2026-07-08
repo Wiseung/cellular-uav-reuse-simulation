@@ -17,7 +17,7 @@ The code follows the execution plan in `执行计划.md` and now uses a more eng
   - ITU-R P.1410 statistical building-blockage LOS probability for higher aerial links
   - LOS/NLOS pathloss exponents, shadowing, and fading sampled per link during the height experiment
 - Effective ASE with traffic activity, scheduling efficiency, control overhead, and outage gating
-- Dynamic trajectory experiment with external site-layout CSV input, handover hysteresis, correlated load, per-user power splitting, and optional GIS-driven LOS overrides from building footprints
+- Dynamic trajectory experiment with external site-layout CSV input, L3-filtered handover events with time-to-trigger, correlated load, dominant-interferer coordinated scheduling, per-user power splitting, and optional GIS-driven LOS/loss overrides from building footprints
 
 ## How to run
 
@@ -75,9 +75,9 @@ The script generates CSV tables and PNG figures under:
 - Ground users use multiple co-channel tiers plus random site perturbation
 - UAV users use a hybrid 3GPP/ITU LOS probability model above the ground-user regime
 - Real site layouts can be injected via CSV for dynamic experiments
-- Building-footprint GeoJSON can override dynamic LOS/NLOS states for links covered by the local GIS sample
+- Building-footprint GeoJSON can override dynamic LOS/NLOS states and add deterministic obstruction loss for links covered by the local GIS sample
 - ASE is reported as effective ASE after applying activity factor, scheduler efficiency, control overhead, and a coverage threshold
-- Dynamic experiments add UAV trajectory, handover logic, correlated cell load, and load-aware power sharing
+- Dynamic experiments add UAV trajectory, filtered handover events, correlated cell load, dominant-interferer coordinated scheduling, load-aware power sharing, and GIS obstruction loss
 
 ## Real layout note
 

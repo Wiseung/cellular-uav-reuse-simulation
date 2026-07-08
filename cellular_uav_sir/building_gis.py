@@ -375,6 +375,80 @@ def _building_blocks_segment(
     return building.height_m >= min_line_height_m
 
 
+def _knife_edge_loss_db(
+    clearance_m: float,
+    d1_m: float,
+    d2_m: float,
+    carrier_frequency_ghz: float,
+    loss_cap_db: float,
+) -> float:
+    if clearance_m <= 0.0:
+        return 0.0
+
+    frequency_hz = max(float(carrier_frequency_ghz) * 1e9, 1.0)
+    wavelength_m = 299792458.0 / frequency_hz
+    v_parameter = clearance_m * math.sqrt(
+        2.0 * (d1_m + d2_m) / max(wavelength_m * d1_m * d2_m, 1e-12)
+    )
+    if v_parameter <= -0.78:
+        return 0.0
+
+    loss_db = 6.9 + 20.0 * math.log10(
+        math.sqrt((v_parameter - 0.1) ** 2 + 1.0) + v_parameter - 0.1
+    )
+    return float(np.clip(loss_db, 0.0, loss_cap_db))
+
+
+def _building_excess_loss_db(
+    building: BuildingFootprint,
+    segment_start_xy_m: np.ndarray,
+    segment_end_xy_m: np.ndarray,
+    tx_height_m: float,
+    rx_height_m: float,
+    carrier_frequency_ghz: float,
+    penetration_loss_per_meter_db: float,
+    penetration_loss_cap_db: float,
+    diffraction_loss_cap_db: float,
+) -> float:
+    interval_t = _segment_polygon_interval_t(
+        segment_start_xy_m,
+        segment_end_xy_m,
+        building.polygon_xy_m,
+    )
+    if interval_t is None:
+        return 0.0
+
+    t_enter, t_exit = interval_t
+    total_distance_m = float(np.linalg.norm(segment_end_xy_m - segment_start_xy_m))
+    if total_distance_m <= 1e-9:
+        return 0.0
+
+    line_height_enter_m = tx_height_m + t_enter * (rx_height_m - tx_height_m)
+    line_height_exit_m = tx_height_m + t_exit * (rx_height_m - tx_height_m)
+    if building.height_m < min(line_height_enter_m, line_height_exit_m):
+        return 0.0
+
+    t_mid = 0.5 * (t_enter + t_exit)
+    line_height_mid_m = tx_height_m + t_mid * (rx_height_m - tx_height_m)
+    clearance_m = max(building.height_m - line_height_mid_m, 0.0)
+    penetration_depth_m = total_distance_m * max(t_exit - t_enter, 0.0)
+    d1_m = max(total_distance_m * max(t_mid, 1e-6), 1.0)
+    d2_m = max(total_distance_m - total_distance_m * max(t_mid, 1e-6), 1.0)
+
+    diffraction_loss_db = _knife_edge_loss_db(
+        clearance_m=clearance_m,
+        d1_m=d1_m,
+        d2_m=d2_m,
+        carrier_frequency_ghz=carrier_frequency_ghz,
+        loss_cap_db=diffraction_loss_cap_db,
+    )
+    penetration_loss_db = min(
+        penetration_depth_m * penetration_loss_per_meter_db,
+        penetration_loss_cap_db,
+    )
+    return max(diffraction_loss_db, penetration_loss_db)
+
+
 def _candidate_building_indices(
     building_dataset: BuildingDataset,
     segment_start_xy_m: np.ndarray,
@@ -403,20 +477,26 @@ def _candidate_building_indices(
     return tuple(candidate_indices)
 
 
-def evaluate_gis_los(
+def evaluate_gis_los_and_loss(
     site_positions_xy_m: np.ndarray,
     user_point_xy_m: np.ndarray,
     tx_height_m: float,
     rx_height_m: float,
     building_dataset: BuildingDataset | None,
-) -> tuple[np.ndarray, np.ndarray]:
+    carrier_frequency_ghz: float,
+    penetration_loss_per_meter_db: float,
+    penetration_loss_cap_db: float,
+    diffraction_loss_cap_db: float,
+    total_excess_loss_cap_db: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     site_positions = np.asarray(site_positions_xy_m, dtype=float)
     user_point = np.asarray(user_point_xy_m, dtype=float)
 
     covered = np.zeros(site_positions.shape[0], dtype=bool)
     los = np.ones(site_positions.shape[0], dtype=bool)
+    excess_loss_db = np.zeros(site_positions.shape[0], dtype=float)
     if building_dataset is None:
-        return covered, los
+        return covered, los, excess_loss_db
 
     for index, site_point in enumerate(site_positions):
         segment_min_x_m = min(float(site_point[0]), float(user_point[0]))
@@ -439,6 +519,7 @@ def evaluate_gis_los(
             segment_start_xy_m=site_point,
             segment_end_xy_m=user_point,
         )
+        building_losses_db: list[float] = []
         for building_index in candidate_indices:
             building = building_dataset.buildings[building_index]
             if _building_blocks_segment(
@@ -449,6 +530,43 @@ def evaluate_gis_los(
                 rx_height_m=rx_height_m,
             ):
                 los[index] = False
-                break
+                building_losses_db.append(
+                    _building_excess_loss_db(
+                        building,
+                        segment_start_xy_m=site_point,
+                        segment_end_xy_m=user_point,
+                        tx_height_m=tx_height_m,
+                        rx_height_m=rx_height_m,
+                        carrier_frequency_ghz=carrier_frequency_ghz,
+                        penetration_loss_per_meter_db=penetration_loss_per_meter_db,
+                        penetration_loss_cap_db=penetration_loss_cap_db,
+                        diffraction_loss_cap_db=diffraction_loss_cap_db,
+                    )
+                )
+        if building_losses_db:
+            dominant_losses_db = sorted(building_losses_db, reverse=True)[:2]
+            excess_loss_db[index] = min(sum(dominant_losses_db), total_excess_loss_cap_db)
 
+    return covered, los, excess_loss_db
+
+
+def evaluate_gis_los(
+    site_positions_xy_m: np.ndarray,
+    user_point_xy_m: np.ndarray,
+    tx_height_m: float,
+    rx_height_m: float,
+    building_dataset: BuildingDataset | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    covered, los, _ = evaluate_gis_los_and_loss(
+        site_positions_xy_m=site_positions_xy_m,
+        user_point_xy_m=user_point_xy_m,
+        tx_height_m=tx_height_m,
+        rx_height_m=rx_height_m,
+        building_dataset=building_dataset,
+        carrier_frequency_ghz=3.5,
+        penetration_loss_per_meter_db=0.0,
+        penetration_loss_cap_db=0.0,
+        diffraction_loss_cap_db=0.0,
+        total_excess_loss_cap_db=0.0,
+    )
     return covered, los
