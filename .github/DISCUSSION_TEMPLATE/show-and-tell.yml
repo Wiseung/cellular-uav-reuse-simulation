@@ -1,0 +1,20 @@
+title: "[Show and tell] "
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What did you build or analyze?
+      description: Share a concise description of your result.
+      placeholder: I used the public-data pipeline on a new city cluster and compared calibrated versus default profiles.
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Artifacts
+      description: Link figures, tables, scripts, or screenshots that others can learn from.
+  - type: textarea
+    id: lessons
+    attributes:
+      label: Lessons learned
+      description: What worked, what did not, and what should others watch out for?
