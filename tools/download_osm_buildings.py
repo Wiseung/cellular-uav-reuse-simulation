@@ -108,7 +108,18 @@ def _to_feature(element: dict[str, object]) -> dict[str, object] | None:
 
     properties = {
         key: tags[key]
-        for key in ("building", "height", "building:levels", "name")
+        for key in (
+            "building",
+            "height",
+            "building:height",
+            "building:levels",
+            "name",
+            "material",
+            "building:material",
+            "roof:material",
+            "roof:shape",
+            "roof:height",
+        )
         if key in tags
     }
     properties["osm_way_id"] = element.get("id")

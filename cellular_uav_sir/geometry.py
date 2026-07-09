@@ -4,6 +4,7 @@ import csv
 import math
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -87,11 +88,17 @@ def perturb_site_positions(
 
 @lru_cache(maxsize=None)
 def _load_site_layout_cached(csv_path: str) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (float(row["x_m"]), float(row["y_m"]))
+        for row in load_site_layout_rows(Path(csv_path))
+    )
+
+
+def load_site_layout_rows(csv_path: Path | str) -> tuple[dict[str, str], ...]:
     path = Path(csv_path)
     if not path.exists():
         raise FileNotFoundError(f"Site layout file not found: {path}")
 
-    points: list[tuple[float, float]] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         required_columns = {"x_m", "y_m"}
@@ -99,16 +106,58 @@ def _load_site_layout_cached(csv_path: str) -> tuple[tuple[float, float], ...]:
             raise ValueError(
                 f"Site layout CSV must include columns {sorted(required_columns)}: {path}"
             )
-        for row in reader:
-            points.append((float(row["x_m"]), float(row["y_m"])))
+        rows = tuple(dict(row) for row in reader)
 
-    if not points:
+    if not rows:
         raise ValueError(f"Site layout CSV contains no rows: {path}")
-    return tuple(points)
+    return rows
+
+
+def _parse_optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def load_site_layout(csv_path: Path | str) -> np.ndarray:
     return np.array(_load_site_layout_cached(str(Path(csv_path).resolve())), dtype=float)
+
+
+def load_site_ground_elevation_offsets_m(
+    csv_path: Path | str,
+    site_positions: np.ndarray | None = None,
+) -> np.ndarray:
+    rows = load_site_layout_rows(csv_path)
+    positions = (
+        np.asarray(site_positions, dtype=float)
+        if site_positions is not None
+        else load_site_layout(csv_path)
+    )
+    ground_elevations_m = np.array(
+        [_parse_optional_float(row.get("ground_elevation_m")) for row in rows],
+        dtype=object,
+    )
+    available_mask = np.array([value is not None for value in ground_elevations_m], dtype=bool)
+    if not np.any(available_mask):
+        return np.zeros(len(rows), dtype=float)
+
+    norms = np.linalg.norm(positions, axis=1)
+    origin_index = int(np.argmin(norms))
+    origin_ground_m = ground_elevations_m[origin_index]
+    if origin_ground_m is None:
+        origin_ground_m = float(
+            np.median(np.array([value for value in ground_elevations_m if value is not None], dtype=float))
+        )
+
+    offsets_m = np.zeros(len(rows), dtype=float)
+    for index, ground_elevation_m in enumerate(ground_elevations_m):
+        if ground_elevation_m is None:
+            continue
+        offsets_m[index] = float(ground_elevation_m) - float(origin_ground_m)
+    return offsets_m
 
 
 def center_site_layout(site_positions: np.ndarray) -> np.ndarray:

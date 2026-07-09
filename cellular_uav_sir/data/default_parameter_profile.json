@@ -1,0 +1,42 @@
+{
+  "beam": {
+    "sector_azimuths_deg": [90.0, 210.0, 330.0],
+    "horizontal_beamwidth_deg": 65.0,
+    "vertical_beamwidth_deg": 8.0,
+    "horizontal_max_attenuation_db": 30.0,
+    "vertical_max_attenuation_db": 30.0,
+    "max_pattern_attenuation_db": 30.0,
+    "antenna_peak_gain_db": 17.0,
+    "mechanical_downtilt_deg": 4.0,
+    "electrical_downtilt_deg": 8.0,
+    "beamforming_enabled": true,
+    "interferer_random_beams": true,
+    "beam_codebook_azimuth_offsets_deg": [-20.0, -10.0, 0.0, 10.0, 20.0],
+    "beam_codebook_elevation_offsets_deg": [-6.0, 0.0, 6.0],
+    "beamforming_array_gain_db": 6.0
+  },
+  "load": {
+    "dynamic_load_mean": 0.65,
+    "dynamic_load_std": 0.18,
+    "dynamic_load_correlation": 0.85,
+    "dynamic_max_users_per_site": 8,
+    "power_split_exponent": 1.0
+  },
+  "handover": {
+    "handover_hysteresis_db": 2.5,
+    "handover_l3_filter_alpha": 0.6,
+    "handover_time_to_trigger_steps": 2,
+    "dynamic_min_dwell_steps": 3
+  },
+  "coordination": {
+    "coordinated_scheduling_enabled": true,
+    "coordinated_scheduling_cluster_size": 2,
+    "coordinated_scheduling_sinr_threshold_db": 5.0,
+    "coordinated_scheduling_blank_fraction": 0.65
+  },
+  "paths": {
+    "dynamic_site_layout_csv": "real_site_layout_knoxville_tn.csv",
+    "building_footprint_geojson": "knoxville_site_layout_buildings.geojson",
+    "results_dir": "../results"
+  }
+}

@@ -8,6 +8,7 @@ import pandas as pd
 from .config import SimulationConfig
 from .dynamic_network import run_dynamic_trajectory_experiment
 from .geometry import sample_points_in_hexagon
+from .parameter_profile import resolve_runtime_config
 from .sir_analytic import sir_db as analytic_sir_db
 from .sir_montecarlo import edge_user_sir, simulate_los_probability_sir_samples, simulate_sir_samples
 
@@ -205,6 +206,7 @@ def run_pathloss_sweep(config: SimulationConfig) -> pd.DataFrame:
 
 
 def run_all_experiments(config: SimulationConfig) -> ExperimentBundle:
+    config = resolve_runtime_config(config)
     sir_vs_reuse, ase_vs_reuse = run_reuse_experiments(config)
     sinr_vs_height, cdf_samples = run_height_experiment(config)
     pathloss_sweep = run_pathloss_sweep(config)

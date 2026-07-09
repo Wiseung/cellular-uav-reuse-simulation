@@ -205,11 +205,90 @@ def _beam_codebook(config: SimulationConfig) -> tuple[np.ndarray, np.ndarray]:
     return np.array(azimuth_offsets, dtype=float), np.array(elevation_offsets, dtype=float)
 
 
+def _resolve_site_count(site_positions: np.ndarray) -> int:
+    sites = np.asarray(site_positions, dtype=float)
+    if sites.ndim == 2:
+        return int(sites.shape[0])
+    if sites.ndim == 3:
+        return int(sites.shape[1])
+    raise ValueError("site_positions must have shape (sites, 2) or (samples, sites, 2)")
+
+
+def _resolve_tx_heights_m(
+    site_positions: np.ndarray,
+    tx_height_m: float | np.ndarray | None,
+    config: SimulationConfig,
+) -> np.ndarray:
+    sites = np.asarray(site_positions, dtype=float)
+    default_height_m = config.base_station_height_m if tx_height_m is None else tx_height_m
+    tx_heights = np.asarray(default_height_m, dtype=float)
+
+    if sites.ndim == 2:
+        site_count = sites.shape[0]
+        if tx_heights.ndim == 0:
+            return np.full(site_count, float(tx_heights), dtype=float)
+        if tx_heights.shape == (site_count,):
+            return tx_heights.astype(float)
+        raise ValueError("tx_height_m must be a scalar or a vector matching site_positions")
+
+    sample_count, site_count = sites.shape[:2]
+    if tx_heights.ndim == 0:
+        return np.full((sample_count, site_count), float(tx_heights), dtype=float)
+    if tx_heights.shape == (site_count,):
+        return np.broadcast_to(tx_heights[None, :], (sample_count, site_count)).astype(float)
+    if tx_heights.shape == (sample_count, site_count):
+        return tx_heights.astype(float)
+    raise ValueError("tx_height_m must be broadcastable to the site grid")
+
+
+def _resolve_sector_azimuths_deg(
+    site_positions: np.ndarray,
+    sector_azimuths_deg: np.ndarray | tuple[float, ...] | None,
+    config: SimulationConfig,
+) -> np.ndarray:
+    site_count = _resolve_site_count(site_positions)
+    raw_azimuths = config.sector_azimuths_deg if sector_azimuths_deg is None else sector_azimuths_deg
+    azimuths = np.asarray(raw_azimuths, dtype=float)
+    if azimuths.ndim == 1:
+        return azimuths
+    if azimuths.ndim == 2 and azimuths.shape[0] == site_count:
+        return azimuths
+    raise ValueError("sector_azimuths_deg must be 1D or shaped (sites, sectors)")
+
+
+def _resolve_site_scalar(
+    site_positions: np.ndarray,
+    value: float | np.ndarray | None,
+    default_value: float,
+    field_name: str,
+) -> float | np.ndarray:
+    site_count = _resolve_site_count(site_positions)
+    resolved = np.asarray(default_value if value is None else value, dtype=float)
+    if resolved.ndim == 0:
+        return float(resolved)
+    if resolved.shape == (site_count,):
+        return resolved.astype(float)
+    raise ValueError(f"{field_name} must be a scalar or a vector matching site_positions")
+
+
+def _resolve_sector_mask(
+    sector_azimuths_deg: np.ndarray,
+    sector_mask: np.ndarray | None,
+) -> np.ndarray | None:
+    if sector_mask is None:
+        return None
+    mask = np.asarray(sector_mask, dtype=bool)
+    if mask.shape != sector_azimuths_deg.shape:
+        raise ValueError("sector_mask must match sector_azimuths_deg")
+    return mask
+
+
 def _geometry_terms(
     site_positions: np.ndarray,
     user_points: np.ndarray,
     rx_height_m: float | np.ndarray,
     config: SimulationConfig,
+    tx_height_m: float | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     users = np.asarray(user_points, dtype=float)
     sites = np.asarray(site_positions, dtype=float)
@@ -226,11 +305,16 @@ def _geometry_terms(
     elif rx_height.shape != (users.shape[0],):
         raise ValueError("rx_height_m must be a scalar or a vector matching user_points")
 
+    tx_height = _resolve_tx_heights_m(sites, tx_height_m, config)
     horizontal_distance = np.sqrt(np.sum(offsets * offsets, axis=-1))
     azimuth_deg = np.degrees(np.arctan2(offsets[..., 1], offsets[..., 0]))
+    if tx_height.ndim == 1:
+        vertical_delta_m = rx_height[:, None] - tx_height[None, :]
+    else:
+        vertical_delta_m = rx_height[:, None] - tx_height
     elevation_deg = np.degrees(
         np.arctan2(
-            rx_height[:, None] - config.base_station_height_m,
+            vertical_delta_m,
             np.maximum(horizontal_distance, 1.0),
         )
     )
@@ -242,17 +326,46 @@ def sector_gain_db(
     user_points: np.ndarray,
     rx_height_m: float | np.ndarray,
     config: SimulationConfig,
+    tx_height_m: float | np.ndarray | None = None,
+    sector_azimuths_deg: np.ndarray | tuple[float, ...] | None = None,
+    total_downtilt_deg: float | np.ndarray | None = None,
+    peak_gain_db: float | np.ndarray | None = None,
+    sector_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     _, azimuth_deg, elevation_deg = _geometry_terms(
         site_positions,
         user_points,
         rx_height_m,
         config,
+        tx_height_m=tx_height_m,
     )
 
-    sector_azimuths = np.asarray(config.sector_azimuths_deg, dtype=float)
-    horizontal_offset_deg = _wrap_angle_deg(azimuth_deg[..., None] - sector_azimuths)
-    vertical_offset_deg = np.abs(elevation_deg[..., None] + config.total_downtilt_deg)
+    sector_azimuths = _resolve_sector_azimuths_deg(site_positions, sector_azimuths_deg, config)
+    downtilt_deg = _resolve_site_scalar(
+        site_positions,
+        total_downtilt_deg,
+        config.total_downtilt_deg,
+        "total_downtilt_deg",
+    )
+    resolved_peak_gain_db = _resolve_site_scalar(
+        site_positions,
+        peak_gain_db,
+        _peak_gain_db(config),
+        "peak_gain_db",
+    )
+    resolved_sector_mask = _resolve_sector_mask(sector_azimuths, sector_mask)
+
+    if sector_azimuths.ndim == 1:
+        horizontal_offset_deg = _wrap_angle_deg(azimuth_deg[..., None] - sector_azimuths)
+    else:
+        horizontal_offset_deg = _wrap_angle_deg(
+            azimuth_deg[..., None] - sector_azimuths[None, :, :]
+        )
+
+    if np.isscalar(downtilt_deg):
+        vertical_offset_deg = np.abs(elevation_deg[..., None] + float(downtilt_deg))
+    else:
+        vertical_offset_deg = np.abs(elevation_deg[..., None] + downtilt_deg[None, :, None])
 
     horizontal_attenuation_db = _pattern_attenuation_db(
         horizontal_offset_deg,
@@ -269,7 +382,17 @@ def sector_gain_db(
         horizontal_attenuation_db + vertical_attenuation_db,
         config.max_pattern_attenuation_db,
     )
-    return _peak_gain_db(config) - total_attenuation_db
+    if np.isscalar(resolved_peak_gain_db):
+        gain_db = float(resolved_peak_gain_db) - total_attenuation_db
+    else:
+        gain_db = resolved_peak_gain_db[None, :, None] - total_attenuation_db
+
+    if resolved_sector_mask is not None:
+        if resolved_sector_mask.ndim == 1:
+            gain_db = np.where(resolved_sector_mask[None, None, :], gain_db, -np.inf)
+        else:
+            gain_db = np.where(resolved_sector_mask[None, :, :], gain_db, -np.inf)
+    return gain_db
 
 
 def sector_gain_linear(
@@ -277,10 +400,26 @@ def sector_gain_linear(
     user_points: np.ndarray,
     rx_height_m: float | np.ndarray,
     config: SimulationConfig,
+    tx_height_m: float | np.ndarray | None = None,
+    sector_azimuths_deg: np.ndarray | tuple[float, ...] | None = None,
+    total_downtilt_deg: float | np.ndarray | None = None,
+    peak_gain_db: float | np.ndarray | None = None,
+    sector_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     return np.power(
         10.0,
-        sector_gain_db(site_positions, user_points, rx_height_m, config) / 10.0,
+        sector_gain_db(
+            site_positions,
+            user_points,
+            rx_height_m,
+            config,
+            tx_height_m=tx_height_m,
+            sector_azimuths_deg=sector_azimuths_deg,
+            total_downtilt_deg=total_downtilt_deg,
+            peak_gain_db=peak_gain_db,
+            sector_mask=sector_mask,
+        )
+        / 10.0,
     )
 
 
@@ -289,26 +428,62 @@ def sector_beam_gain_db(
     user_points: np.ndarray,
     rx_height_m: float | np.ndarray,
     config: SimulationConfig,
+    tx_height_m: float | np.ndarray | None = None,
+    sector_azimuths_deg: np.ndarray | tuple[float, ...] | None = None,
+    total_downtilt_deg: float | np.ndarray | None = None,
+    peak_gain_db: float | np.ndarray | None = None,
+    beamforming_array_gain_db: float | np.ndarray | None = None,
+    sector_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     _, azimuth_deg, elevation_deg = _geometry_terms(
         site_positions,
         user_points,
         rx_height_m,
         config,
+        tx_height_m=tx_height_m,
     )
-    sector_azimuths = np.asarray(config.sector_azimuths_deg, dtype=float)
+    sector_azimuths = _resolve_sector_azimuths_deg(site_positions, sector_azimuths_deg, config)
+    downtilt_deg = _resolve_site_scalar(
+        site_positions,
+        total_downtilt_deg,
+        config.total_downtilt_deg,
+        "total_downtilt_deg",
+    )
+    resolved_peak_gain_db = _resolve_site_scalar(
+        site_positions,
+        peak_gain_db,
+        _peak_gain_db(config),
+        "peak_gain_db",
+    )
+    resolved_beamforming_gain_db = _resolve_site_scalar(
+        site_positions,
+        beamforming_array_gain_db,
+        config.beamforming_array_gain_db,
+        "beamforming_array_gain_db",
+    )
+    resolved_sector_mask = _resolve_sector_mask(sector_azimuths, sector_mask)
     beam_azimuth_offsets_deg, beam_elevation_offsets_deg = _beam_codebook(config)
 
-    effective_sector_azimuth_deg = (
-        sector_azimuths[None, None, :, None] + beam_azimuth_offsets_deg[None, None, None, :]
-    )
+    if sector_azimuths.ndim == 1:
+        effective_sector_azimuth_deg = (
+            sector_azimuths[None, None, :, None] + beam_azimuth_offsets_deg[None, None, None, :]
+        )
+    else:
+        effective_sector_azimuth_deg = (
+            sector_azimuths[None, :, :, None] + beam_azimuth_offsets_deg[None, None, None, :]
+        )
     horizontal_offset_deg = _wrap_angle_deg(
         azimuth_deg[..., None, None] - effective_sector_azimuth_deg
     )
 
-    effective_vertical_boresight_deg = (
-        config.total_downtilt_deg - beam_elevation_offsets_deg[None, None, None, :]
-    )
+    if np.isscalar(downtilt_deg):
+        effective_vertical_boresight_deg = (
+            float(downtilt_deg) - beam_elevation_offsets_deg[None, None, None, :]
+        )
+    else:
+        effective_vertical_boresight_deg = (
+            downtilt_deg[None, :, None, None] - beam_elevation_offsets_deg[None, None, None, :]
+        )
     vertical_offset_deg = np.abs(
         elevation_deg[..., None, None] + effective_vertical_boresight_deg
     )
@@ -328,9 +503,28 @@ def sector_beam_gain_db(
         horizontal_attenuation_db + vertical_attenuation_db,
         config.max_pattern_attenuation_db,
     )
-    gain_db = _peak_gain_db(config) - total_attenuation_db
+    if np.isscalar(resolved_peak_gain_db):
+        gain_db = float(resolved_peak_gain_db) - total_attenuation_db
+    else:
+        gain_db = resolved_peak_gain_db[None, :, None, None] - total_attenuation_db
     if config.beamforming_enabled:
-        gain_db = gain_db + config.beamforming_array_gain_db
+        if np.isscalar(resolved_beamforming_gain_db):
+            gain_db = gain_db + float(resolved_beamforming_gain_db)
+        else:
+            gain_db = gain_db + resolved_beamforming_gain_db[None, :, None, None]
+    if resolved_sector_mask is not None:
+        if resolved_sector_mask.ndim == 1:
+            gain_db = np.where(
+                resolved_sector_mask[None, None, :, None],
+                gain_db,
+                -np.inf,
+            )
+        else:
+            gain_db = np.where(
+                resolved_sector_mask[None, :, :, None],
+                gain_db,
+                -np.inf,
+            )
     return gain_db
 
 
@@ -339,11 +533,41 @@ def best_sector_gain_db(
     user_points: np.ndarray,
     rx_height_m: float | np.ndarray,
     config: SimulationConfig,
+    tx_height_m: float | np.ndarray | None = None,
+    sector_azimuths_deg: np.ndarray | tuple[float, ...] | None = None,
+    total_downtilt_deg: float | np.ndarray | None = None,
+    peak_gain_db: float | np.ndarray | None = None,
+    beamforming_array_gain_db: float | np.ndarray | None = None,
+    sector_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     if config.beamforming_enabled:
-        return np.max(sector_beam_gain_db(site_positions, user_points, rx_height_m, config), axis=(-1, -2))
+        return np.max(
+            sector_beam_gain_db(
+                site_positions,
+                user_points,
+                rx_height_m,
+                config,
+                tx_height_m=tx_height_m,
+                sector_azimuths_deg=sector_azimuths_deg,
+                total_downtilt_deg=total_downtilt_deg,
+                peak_gain_db=peak_gain_db,
+                beamforming_array_gain_db=beamforming_array_gain_db,
+                sector_mask=sector_mask,
+            ),
+            axis=(-1, -2),
+        )
     return np.max(
-        sector_gain_db(site_positions, user_points, rx_height_m, config),
+        sector_gain_db(
+            site_positions,
+            user_points,
+            rx_height_m,
+            config,
+            tx_height_m=tx_height_m,
+            sector_azimuths_deg=sector_azimuths_deg,
+            total_downtilt_deg=total_downtilt_deg,
+            peak_gain_db=peak_gain_db,
+            sector_mask=sector_mask,
+        ),
         axis=-1,
     )
 
@@ -353,10 +577,28 @@ def best_sector_gain_linear(
     user_points: np.ndarray,
     rx_height_m: float | np.ndarray,
     config: SimulationConfig,
+    tx_height_m: float | np.ndarray | None = None,
+    sector_azimuths_deg: np.ndarray | tuple[float, ...] | None = None,
+    total_downtilt_deg: float | np.ndarray | None = None,
+    peak_gain_db: float | np.ndarray | None = None,
+    beamforming_array_gain_db: float | np.ndarray | None = None,
+    sector_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     return np.power(
         10.0,
-        best_sector_gain_db(site_positions, user_points, rx_height_m, config) / 10.0,
+        best_sector_gain_db(
+            site_positions,
+            user_points,
+            rx_height_m,
+            config,
+            tx_height_m=tx_height_m,
+            sector_azimuths_deg=sector_azimuths_deg,
+            total_downtilt_deg=total_downtilt_deg,
+            peak_gain_db=peak_gain_db,
+            beamforming_array_gain_db=beamforming_array_gain_db,
+            sector_mask=sector_mask,
+        )
+        / 10.0,
     )
 
 
@@ -366,11 +608,38 @@ def random_interferer_gain_linear(
     rx_height_m: float | np.ndarray,
     config: SimulationConfig,
     rng: np.random.Generator,
+    tx_height_m: float | np.ndarray | None = None,
+    sector_azimuths_deg: np.ndarray | tuple[float, ...] | None = None,
+    total_downtilt_deg: float | np.ndarray | None = None,
+    peak_gain_db: float | np.ndarray | None = None,
+    beamforming_array_gain_db: float | np.ndarray | None = None,
+    sector_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     if not config.beamforming_enabled or not config.interferer_random_beams:
-        return sector_gain_linear(site_positions, user_points, rx_height_m, config)
+        return sector_gain_linear(
+            site_positions,
+            user_points,
+            rx_height_m,
+            config,
+            tx_height_m=tx_height_m,
+            sector_azimuths_deg=sector_azimuths_deg,
+            total_downtilt_deg=total_downtilt_deg,
+            peak_gain_db=peak_gain_db,
+            sector_mask=sector_mask,
+        )
 
-    gain_db = sector_beam_gain_db(site_positions, user_points, rx_height_m, config)
+    gain_db = sector_beam_gain_db(
+        site_positions,
+        user_points,
+        rx_height_m,
+        config,
+        tx_height_m=tx_height_m,
+        sector_azimuths_deg=sector_azimuths_deg,
+        total_downtilt_deg=total_downtilt_deg,
+        peak_gain_db=peak_gain_db,
+        beamforming_array_gain_db=beamforming_array_gain_db,
+        sector_mask=sector_mask,
+    )
     beam_count = gain_db.shape[-1]
     beam_indices = rng.integers(
         low=0,
