@@ -61,6 +61,8 @@ def itu_statistical_los_probability(
     config: SimulationConfig,
 ) -> np.ndarray:
     distance = np.asarray(distance_2d_m, dtype=float)
+    if distance.size == 0:
+        return np.ones_like(distance, dtype=float)
     rx_height = np.asarray(rx_height_m, dtype=float)
     if rx_height.ndim == 1 and distance.ndim > 1:
         rx_height = rx_height[:, None]

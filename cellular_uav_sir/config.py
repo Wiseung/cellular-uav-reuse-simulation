@@ -50,6 +50,9 @@ class SimulationConfig:
     building_footprint_geojson: Path | None = field(
         default_factory=lambda: Path(__file__).resolve().parent / "data" / "knoxville_site_layout_buildings.geojson"
     )
+    parameter_profile_json: Path | None = field(
+        default_factory=lambda: Path(__file__).resolve().parent / "data" / "default_parameter_profile.json"
+    )
     ground_interferer_count: int = 18
     aerial_interferer_count: int = 42
     layout_interferer_count: int = 24
@@ -109,9 +112,13 @@ class SimulationConfig:
     building_default_height_m: float = 12.0
     building_level_height_m: float = 3.0
     building_min_area_m2: float = 16.0
+    building_material_loss_profile_json: Path | None = field(
+        default_factory=lambda: Path(__file__).resolve().parent / "data" / "building_material_loss_profile.json"
+    )
     results_dir: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent / "results"
     )
+    external_profile_applied: bool = False
 
     def rng(self, offset: int = 0) -> np.random.Generator:
         return np.random.default_rng(self.random_seed + offset)

@@ -1,15 +1,127 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 
 from cellular_uav_sir.config import SimulationConfig
-from cellular_uav_sir.dynamic_network import _coordination_weights, _handover_decision
+from cellular_uav_sir.dynamic_network import (
+    _best_server_choice,
+    _build_dynamic_site_parameters,
+    _cochannel_interferer_mask,
+    _coordination_weights,
+    _handover_decision,
+    run_dynamic_trajectory_experiment,
+)
 
 
 class DynamicNetworkTests(unittest.TestCase):
+    def test_build_dynamic_site_parameters_applies_site_overrides(self) -> None:
+        config = replace(
+            SimulationConfig(),
+            beamforming_enabled=False,
+        )
+        raw_rows = (
+            {
+                "site_id": "s0",
+                "sector_azimuths_deg": "180",
+                "tx_height_m": "40",
+                "tx_power_dbm": "50",
+                "mechanical_downtilt_deg": "2",
+                "electrical_downtilt_deg": "4",
+                "radio": "LTE",
+                "arfcn_list": "100",
+            },
+            {
+                "site_id": "s1",
+                "antenna_azimuth_deg": "90",
+                "antenna_height_m": "30",
+                "mechanical_downtilt_deg": "1",
+                "electrical_downtilt_deg": "3",
+                "radio": "LTE",
+                "arfcn_list": "200",
+            },
+        )
+        site_parameters = _build_dynamic_site_parameters(
+            raw_rows,
+            np.array([0.0, 5.0], dtype=float),
+            config,
+        )
+
+        self.assertEqual(site_parameters.tx_heights_m.tolist(), [40.0, 35.0])
+        self.assertEqual(site_parameters.tx_power_dbm.tolist(), [50.0, 46.0])
+        self.assertEqual(site_parameters.total_downtilt_deg.tolist(), [6.0, 4.0])
+        self.assertEqual(site_parameters.sector_azimuths_deg[0, 0], 180.0)
+        self.assertEqual(site_parameters.sector_azimuths_deg[1, 0], 90.0)
+        self.assertEqual(site_parameters.sector_mask[0].tolist(), [True])
+        self.assertEqual(site_parameters.arfcn_sets[0], frozenset({"100"}))
+        self.assertEqual(site_parameters.arfcn_sets[1], frozenset({"200"}))
+
+    def test_best_server_choice_uses_site_specific_sector_azimuths(self) -> None:
+        config = replace(
+            SimulationConfig(),
+            beamforming_enabled=False,
+            los_pathloss_exponent=2.2,
+            nlos_pathloss_exponent=2.2,
+            los_shadow_sigma_db=0.0,
+            nlos_shadow_sigma_db=0.0,
+            mechanical_downtilt_deg=0.0,
+            electrical_downtilt_deg=0.0,
+        )
+        site_positions = np.array([[0.0, 0.0], [200.0, 0.0]], dtype=float)
+        raw_rows = (
+            {
+                "site_id": "s0",
+                "sector_azimuths_deg": "180",
+                "radio": "LTE",
+                "arfcn_list": "100",
+            },
+            {
+                "site_id": "s1",
+                "sector_azimuths_deg": "180",
+                "radio": "LTE",
+                "arfcn_list": "100",
+            },
+        )
+        site_parameters = _build_dynamic_site_parameters(
+            raw_rows,
+            np.zeros(2, dtype=float),
+            config,
+        )
+
+        candidate_reference_power_mw, *_ = _best_server_choice(
+            site_positions=site_positions,
+            site_parameters=site_parameters,
+            user_point=np.array([100.0, 0.0], dtype=float),
+            terminal_height_m=config.ground_terminal_height_m,
+            config=config,
+            rng=np.random.default_rng(123),
+            building_dataset=None,
+        )
+
+        self.assertGreater(
+            float(np.max(candidate_reference_power_mw[1])),
+            float(np.max(candidate_reference_power_mw[0])),
+        )
+
+    def test_cochannel_interferer_mask_filters_mismatched_radio_and_arfcn(self) -> None:
+        site_parameters = _build_dynamic_site_parameters(
+            (
+                {"site_id": "s0", "radio": "LTE", "arfcn_list": "100"},
+                {"site_id": "s1", "radio": "LTE", "arfcn_list": "200"},
+                {"site_id": "s2", "radio": "NR", "arfcn_list": "100"},
+                {"site_id": "s3", "radio": "LTE", "arfcn_list": "100"},
+            ),
+            np.zeros(4, dtype=float),
+            SimulationConfig(),
+        )
+
+        mask = _cochannel_interferer_mask(site_parameters, serving_site_index=0)
+        self.assertEqual(mask.tolist(), [False, False, False, True])
+
     def test_handover_requires_time_to_trigger(self) -> None:
         config = replace(
             SimulationConfig(),
@@ -98,6 +210,40 @@ class DynamicNetworkTests(unittest.TestCase):
         self.assertLess(weights[0], 1.0)
         self.assertLess(weights[1], 1.0)
         self.assertEqual(weights[2], 1.0)
+
+    def test_run_dynamic_trajectory_experiment_filters_non_cochannel_interference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            site_layout_path = temp_path / "site_layout.csv"
+            site_layout_path.write_text(
+                "\n".join(
+                    [
+                        "site_id,x_m,y_m,latdec,londec,sector_azimuths_deg,mechanical_downtilt_deg,electrical_downtilt_deg,radio,arfcn_list",
+                        "s0,0,0,35.0,-84.0,180,0,0,LTE,100",
+                        "s1,200,0,35.0005,-84.0005,180,0,0,LTE,200",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = replace(
+                SimulationConfig(),
+                dynamic_site_layout_csv=site_layout_path,
+                building_footprint_geojson=None,
+                dynamic_time_steps=1,
+                dynamic_path_half_length_m=50.0,
+                dynamic_path_lateral_offset_m=0.0,
+                dynamic_altitude_m=0.0,
+                beamforming_enabled=False,
+                mechanical_downtilt_deg=0.0,
+                electrical_downtilt_deg=0.0,
+                parameter_profile_json=None,
+            )
+
+            bundle = run_dynamic_trajectory_experiment(config)
+
+        trace_row = bundle.trace.iloc[0]
+        self.assertEqual(int(trace_row["cochannel_interferer_count"]), 0)
+        self.assertLess(float(trace_row["interference_power_dbm"]), -140.0)
 
 
 if __name__ == "__main__":

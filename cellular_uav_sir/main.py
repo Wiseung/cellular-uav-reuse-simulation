@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import argparse
+from dataclasses import replace
 from pathlib import Path
 
 from .config import SimulationConfig
 from .experiments import run_all_experiments
+from .parameter_profile import resolve_runtime_config
 from .plots import generate_all_plots
 
 
@@ -12,8 +15,49 @@ def _save_table(dataframe, output_path: Path) -> None:
     dataframe.to_csv(output_path, index=False)
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the cellular + UAV reuse simulation.")
+    parser.add_argument(
+        "--profile-json",
+        type=Path,
+        help="Optional external parameter profile JSON for beam/load/handover/path overrides.",
+    )
+    parser.add_argument(
+        "--site-layout-csv",
+        type=Path,
+        help="Optional dynamic site-layout CSV override.",
+    )
+    parser.add_argument(
+        "--building-geojson",
+        type=Path,
+        help="Optional building-footprint GeoJSON override.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        help="Optional results directory override.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    config = SimulationConfig()
+    args = _parse_args()
+    defaults = SimulationConfig()
+    config = SimulationConfig(
+        parameter_profile_json=args.profile_json
+        if args.profile_json is not None
+        else defaults.parameter_profile_json,
+    )
+    config = resolve_runtime_config(config)
+    runtime_overrides = {}
+    if args.site_layout_csv is not None:
+        runtime_overrides["dynamic_site_layout_csv"] = args.site_layout_csv
+    if args.building_geojson is not None:
+        runtime_overrides["building_footprint_geojson"] = args.building_geojson
+    if args.results_dir is not None:
+        runtime_overrides["results_dir"] = args.results_dir
+    if runtime_overrides:
+        config = replace(config, **runtime_overrides)
     config.results_dir.mkdir(parents=True, exist_ok=True)
 
     experiment_bundle = run_all_experiments(config)

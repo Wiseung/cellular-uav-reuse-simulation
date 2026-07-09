@@ -21,6 +21,17 @@ class BuildingFootprint:
     max_x_m: float
     min_y_m: float
     max_y_m: float
+    top_height_m: float | None = None
+    ground_elevation_m: float | None = None
+    facade_material: str | None = None
+    roof_material: str | None = None
+    height_source: str | None = None
+
+    @property
+    def obstruction_height_m(self) -> float:
+        if self.top_height_m is not None:
+            return float(self.top_height_m)
+        return float(self.height_m)
 
 
 @dataclass(frozen=True)
@@ -63,6 +74,28 @@ def _load_site_layout_origin_latlon(site_layout_csv: Path | str) -> tuple[float,
         return best_origin
 
 
+def _load_site_layout_origin_ground_elevation_m(site_layout_csv: Path | str) -> float | None:
+    path = Path(site_layout_csv)
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None or "ground_elevation_m" not in reader.fieldnames:
+            return None
+
+        best_ground_elevation_m: float | None = None
+        best_norm = float("inf")
+        for row in reader:
+            parsed_ground_elevation_m = _parse_height_value_m(row.get("ground_elevation_m"))
+            if parsed_ground_elevation_m is None:
+                continue
+            x_value = float(row.get("x_m", 0.0) or 0.0)
+            y_value = float(row.get("y_m", 0.0) or 0.0)
+            norm = x_value * x_value + y_value * y_value
+            if norm < best_norm:
+                best_norm = norm
+                best_ground_elevation_m = parsed_ground_elevation_m
+        return best_ground_elevation_m
+
+
 def _lonlat_to_local_xy_m(
     latitude_deg: float,
     longitude_deg: float,
@@ -100,18 +133,105 @@ def _building_height_m(
     properties: dict[str, object],
     default_height_m: float,
     level_height_m: float,
-) -> float:
-    for key in ("height", "building:height", "roof:height"):
+) -> tuple[float, str]:
+    for key in ("height", "building:height", "roof:height", "roof_height"):
         parsed_height_m = _parse_height_value_m(properties.get(key))
         if parsed_height_m is not None and parsed_height_m > 0.0:
-            return parsed_height_m
+            return parsed_height_m, key
 
-    for key in ("building:levels", "levels"):
+    for key in ("building:levels", "levels", "num_floors"):
         parsed_levels = _parse_height_value_m(properties.get(key))
         if parsed_levels is not None and parsed_levels > 0.0:
-            return parsed_levels * level_height_m
+            return parsed_levels * level_height_m, key
 
-    return default_height_m
+    return default_height_m, "default_height_m"
+
+
+def _building_ground_elevation_m(properties: dict[str, object]) -> float | None:
+    for key in ("ground_elevation_m", "ground_elevation", "elevation"):
+        parsed_ground_elevation_m = _parse_height_value_m(properties.get(key))
+        if parsed_ground_elevation_m is not None:
+            return parsed_ground_elevation_m
+    return None
+
+
+def _building_top_height_m(
+    height_m: float,
+    properties: dict[str, object],
+    origin_ground_elevation_m: float | None,
+) -> tuple[float | None, float | None]:
+    ground_elevation_m = _building_ground_elevation_m(properties)
+    if ground_elevation_m is None or origin_ground_elevation_m is None:
+        return None, ground_elevation_m
+    return height_m + (ground_elevation_m - origin_ground_elevation_m), ground_elevation_m
+
+
+def _optional_text_property(properties: dict[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = properties.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+@lru_cache(maxsize=None)
+def _load_material_loss_models(
+    material_loss_profile_path: str | None,
+) -> tuple[tuple[tuple[str, ...], float, float], ...]:
+    if material_loss_profile_path is None:
+        path = Path(__file__).resolve().parent / "data" / "building_material_loss_profile.json"
+    else:
+        path = Path(material_loss_profile_path)
+    if not path.exists():
+        return ()
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    materials = payload.get("materials", [])
+    if not isinstance(materials, list):
+        raise ValueError(f"Material loss profile must contain a 'materials' list: {path}")
+
+    models: list[tuple[tuple[str, ...], float, float]] = []
+    for entry in materials:
+        if not isinstance(entry, dict):
+            continue
+        tokens = entry.get("tokens", [])
+        if not isinstance(tokens, list) or not tokens:
+            continue
+        models.append(
+            (
+                tuple(str(token).strip().lower() for token in tokens if str(token).strip()),
+                float(entry.get("penetration_multiplier", 1.0)),
+                float(entry.get("entry_loss_db", 0.0)),
+            )
+        )
+    return tuple(models)
+
+
+def _material_penetration_adjustment(
+    building: BuildingFootprint,
+    material_loss_profile_path: Path | str | None = None,
+) -> tuple[float, float]:
+    material_text = " ".join(
+        value.lower()
+        for value in (building.facade_material, building.roof_material)
+        if value is not None and value.strip()
+    )
+    if not material_text:
+        return 1.0, 0.0
+
+    multiplier = 1.0
+    entry_loss_db = 0.0
+    material_models = _load_material_loss_models(
+        None if material_loss_profile_path is None else str(Path(material_loss_profile_path).resolve())
+    )
+    for tokens, candidate_multiplier, candidate_entry_loss_db in material_models:
+        if any(token in material_text for token in tokens):
+            multiplier = max(multiplier, candidate_multiplier)
+            entry_loss_db = max(entry_loss_db, candidate_entry_loss_db)
+    return multiplier, entry_loss_db
 
 
 def _polygon_area_m2(polygon_xy_m: np.ndarray) -> float:
@@ -163,6 +283,7 @@ def _load_building_dataset_cached(
     building_geojson_path: str,
     origin_latitude_deg: float,
     origin_longitude_deg: float,
+    origin_ground_elevation_m: float | None,
     default_height_m: float,
     level_height_m: float,
     min_area_m2: float,
@@ -186,7 +307,19 @@ def _load_building_dataset_cached(
         if not isinstance(properties, dict):
             properties = {}
 
-        height_m = _building_height_m(properties, default_height_m, level_height_m)
+        height_m, height_source = _building_height_m(properties, default_height_m, level_height_m)
+        top_height_m, ground_elevation_m = _building_top_height_m(
+            height_m,
+            properties,
+            origin_ground_elevation_m,
+        )
+        facade_material = _optional_text_property(
+            properties,
+            "facade_material",
+            "building:material",
+            "material",
+        )
+        roof_material = _optional_text_property(properties, "roof_material", "roof:material")
         for ring in _iter_exterior_rings(geometry):
             if len(ring) < 4:
                 continue
@@ -222,6 +355,11 @@ def _load_building_dataset_cached(
                     max_x_m=max_x_m,
                     min_y_m=min_y_m,
                     max_y_m=max_y_m,
+                    top_height_m=None if top_height_m is None else float(top_height_m),
+                    ground_elevation_m=None if ground_elevation_m is None else float(ground_elevation_m),
+                    facade_material=facade_material,
+                    roof_material=roof_material,
+                    height_source=height_source,
                 )
             )
 
@@ -252,10 +390,12 @@ def load_building_dataset(
         )
 
     origin_latitude_deg, origin_longitude_deg = origin_latlon
+    origin_ground_elevation_m = _load_site_layout_origin_ground_elevation_m(site_layout_csv)
     return _load_building_dataset_cached(
         str(Path(building_geojson_path).resolve()),
         float(origin_latitude_deg),
         float(origin_longitude_deg),
+        None if origin_ground_elevation_m is None else float(origin_ground_elevation_m),
         float(default_height_m),
         float(level_height_m),
         float(min_area_m2),
@@ -372,7 +512,7 @@ def _building_blocks_segment(
     line_height_enter_m = tx_height_m + t_enter * (rx_height_m - tx_height_m)
     line_height_exit_m = tx_height_m + t_exit * (rx_height_m - tx_height_m)
     min_line_height_m = min(line_height_enter_m, line_height_exit_m)
-    return building.height_m >= min_line_height_m
+    return building.obstruction_height_m >= min_line_height_m
 
 
 def _knife_edge_loss_db(
@@ -409,6 +549,7 @@ def _building_excess_loss_db(
     penetration_loss_per_meter_db: float,
     penetration_loss_cap_db: float,
     diffraction_loss_cap_db: float,
+    material_loss_profile_path: Path | str | None = None,
 ) -> float:
     interval_t = _segment_polygon_interval_t(
         segment_start_xy_m,
@@ -425,12 +566,12 @@ def _building_excess_loss_db(
 
     line_height_enter_m = tx_height_m + t_enter * (rx_height_m - tx_height_m)
     line_height_exit_m = tx_height_m + t_exit * (rx_height_m - tx_height_m)
-    if building.height_m < min(line_height_enter_m, line_height_exit_m):
+    if building.obstruction_height_m < min(line_height_enter_m, line_height_exit_m):
         return 0.0
 
     t_mid = 0.5 * (t_enter + t_exit)
     line_height_mid_m = tx_height_m + t_mid * (rx_height_m - tx_height_m)
-    clearance_m = max(building.height_m - line_height_mid_m, 0.0)
+    clearance_m = max(building.obstruction_height_m - line_height_mid_m, 0.0)
     penetration_depth_m = total_distance_m * max(t_exit - t_enter, 0.0)
     d1_m = max(total_distance_m * max(t_mid, 1e-6), 1.0)
     d2_m = max(total_distance_m - total_distance_m * max(t_mid, 1e-6), 1.0)
@@ -442,9 +583,14 @@ def _building_excess_loss_db(
         carrier_frequency_ghz=carrier_frequency_ghz,
         loss_cap_db=diffraction_loss_cap_db,
     )
+    material_multiplier, material_entry_loss_db = _material_penetration_adjustment(
+        building,
+        material_loss_profile_path=material_loss_profile_path,
+    )
     penetration_loss_db = min(
-        penetration_depth_m * penetration_loss_per_meter_db,
-        penetration_loss_cap_db,
+        penetration_depth_m * penetration_loss_per_meter_db * material_multiplier
+        + material_entry_loss_db,
+        penetration_loss_cap_db * material_multiplier + material_entry_loss_db,
     )
     return max(diffraction_loss_db, penetration_loss_db)
 
@@ -480,7 +626,7 @@ def _candidate_building_indices(
 def evaluate_gis_los_and_loss(
     site_positions_xy_m: np.ndarray,
     user_point_xy_m: np.ndarray,
-    tx_height_m: float,
+    tx_height_m: float | np.ndarray,
     rx_height_m: float,
     building_dataset: BuildingDataset | None,
     carrier_frequency_ghz: float,
@@ -488,9 +634,13 @@ def evaluate_gis_los_and_loss(
     penetration_loss_cap_db: float,
     diffraction_loss_cap_db: float,
     total_excess_loss_cap_db: float,
+    material_loss_profile_path: Path | str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     site_positions = np.asarray(site_positions_xy_m, dtype=float)
     user_point = np.asarray(user_point_xy_m, dtype=float)
+    tx_heights_m = np.asarray(tx_height_m, dtype=float)
+    if tx_heights_m.ndim == 0:
+        tx_heights_m = np.full(site_positions.shape[0], float(tx_heights_m), dtype=float)
 
     covered = np.zeros(site_positions.shape[0], dtype=bool)
     los = np.ones(site_positions.shape[0], dtype=bool)
@@ -522,11 +672,12 @@ def evaluate_gis_los_and_loss(
         building_losses_db: list[float] = []
         for building_index in candidate_indices:
             building = building_dataset.buildings[building_index]
+            tx_height_value_m = float(tx_heights_m[index])
             if _building_blocks_segment(
                 building,
                 segment_start_xy_m=site_point,
                 segment_end_xy_m=user_point,
-                tx_height_m=tx_height_m,
+                tx_height_m=tx_height_value_m,
                 rx_height_m=rx_height_m,
             ):
                 los[index] = False
@@ -535,12 +686,13 @@ def evaluate_gis_los_and_loss(
                         building,
                         segment_start_xy_m=site_point,
                         segment_end_xy_m=user_point,
-                        tx_height_m=tx_height_m,
+                        tx_height_m=tx_height_value_m,
                         rx_height_m=rx_height_m,
                         carrier_frequency_ghz=carrier_frequency_ghz,
                         penetration_loss_per_meter_db=penetration_loss_per_meter_db,
                         penetration_loss_cap_db=penetration_loss_cap_db,
                         diffraction_loss_cap_db=diffraction_loss_cap_db,
+                        material_loss_profile_path=material_loss_profile_path,
                     )
                 )
         if building_losses_db:
@@ -553,7 +705,7 @@ def evaluate_gis_los_and_loss(
 def evaluate_gis_los(
     site_positions_xy_m: np.ndarray,
     user_point_xy_m: np.ndarray,
-    tx_height_m: float,
+    tx_height_m: float | np.ndarray,
     rx_height_m: float,
     building_dataset: BuildingDataset | None,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -568,5 +720,6 @@ def evaluate_gis_los(
         penetration_loss_cap_db=0.0,
         diffraction_loss_cap_db=0.0,
         total_excess_loss_cap_db=0.0,
+        material_loss_profile_path=None,
     )
     return covered, los
