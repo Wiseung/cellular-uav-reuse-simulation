@@ -1,0 +1,25 @@
+title: "[Idea] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+      description: Describe the feature, scenario, or workflow idea.
+      placeholder: Add a repeatable comparison mode for multiple UAV altitude traces over the same calibrated site layout.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why it matters
+      description: Explain the user or research value.
+      placeholder: This would make it easier to compare altitude sensitivity without rebuilding the full input stack.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Suggested scope
+      description: Share the smallest version worth implementing first.

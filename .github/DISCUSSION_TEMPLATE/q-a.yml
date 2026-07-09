@@ -1,0 +1,23 @@
+title: "[Q&A] "
+labels:
+  - question
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Ask a concrete usage, modeling, or results question.
+      placeholder: How should I override the default Knoxville inputs when I want to run only the dynamic experiment on my own site layout?
+    validations:
+      required: true
+  - type: textarea
+    id: what_tried
+    attributes:
+      label: What you already tried
+      description: Mention commands, docs, or files you already checked.
+      placeholder: I read the README and tried `--site-layout-csv`, but I am not sure whether I also need a custom profile JSON.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and inputs
+      description: Share the platform, Python version, and any relevant input files.

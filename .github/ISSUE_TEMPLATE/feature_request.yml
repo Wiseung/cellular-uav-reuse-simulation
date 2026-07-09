@@ -1,0 +1,38 @@
+name: Feature request
+description: Request a scoped simulator, data-pipeline, or workflow enhancement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for bounded implementation requests. If the idea is still open-ended, start a Discussion in the Ideas category instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What concrete limitation or workflow pain point does this request address?
+      placeholder: I need a repeatable way to compare calibrated and uncalibrated profiles for the same public dataset.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest change that would solve the problem.
+      placeholder: Add a command-line flag that writes side-by-side comparison metrics for the baseline and calibrated runs.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope boundaries
+      description: Call out what should stay unchanged.
+      placeholder: Keep the current CSV schema and default results directory unchanged.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: How should this be verified when implemented?
+      placeholder: A test should cover the new flag and the workflow should still pass on the default simulation command.
