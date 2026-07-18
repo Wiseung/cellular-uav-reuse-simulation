@@ -4,6 +4,8 @@ __pycache__/
 .venv/
 venv/
 
+cellular_uav_sir/results/
+
 36777-f00.zip
 36777_extracted/
 R-REC-P.1410-6-202308-I__PDF-E.pdf
